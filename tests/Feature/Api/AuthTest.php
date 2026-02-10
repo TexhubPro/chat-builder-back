@@ -1,10 +1,13 @@
 <?php
 
 use App\Mail\EmailVerificationCodeMail;
+use App\Mail\TemporaryPasswordMail;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Storage;
 
 uses(RefreshDatabase::class);
 
@@ -243,6 +246,76 @@ test('verification code resend respects cooldown', function () {
     Mail::assertSent(EmailVerificationCodeMail::class, 2);
 });
 
+test('forgot password resets password and sends temporary password', function () {
+    Mail::fake();
+
+    $user = User::factory()->create([
+        'email' => 'forgot-password@example.com',
+        'password' => Hash::make('OldStrongP@ss1'),
+        'status' => true,
+        'email_verified_at' => now(),
+    ]);
+
+    $issuedToken = $user->createToken('frontend');
+
+    $response = $this->postJson('/api/auth/forgot-password', [
+        'email' => 'forgot-password@example.com',
+    ]);
+
+    $response
+        ->assertOk()
+        ->assertJsonPath('message', 'If the account exists, a temporary password has been sent.');
+
+    Mail::assertSent(TemporaryPasswordMail::class, function (TemporaryPasswordMail $mail) use ($user) {
+        return $mail->hasTo($user->email) && strlen($mail->temporaryPassword) >= 10;
+    });
+
+    $mail = Mail::sent(TemporaryPasswordMail::class)->first();
+
+    $user->refresh();
+
+    expect(Hash::check('OldStrongP@ss1', $user->password))->toBeFalse();
+    expect($mail)->not->toBeNull();
+    expect(Hash::check($mail->temporaryPassword, $user->password))->toBeTrue();
+
+    $this->assertDatabaseMissing('personal_access_tokens', [
+        'id' => $issuedToken->accessToken->id,
+    ]);
+});
+
+test('forgot password returns generic response for unknown email', function () {
+    Mail::fake();
+
+    $this->postJson('/api/auth/forgot-password', [
+        'email' => 'missing@example.com',
+    ])
+        ->assertOk()
+        ->assertJsonPath('message', 'If the account exists, a temporary password has been sent.');
+
+    Mail::assertNothingSent();
+});
+
+test('forgot password attempts are limited to four per hour', function () {
+    Mail::fake();
+
+    $user = User::factory()->create([
+        'email' => 'forgot-limit@example.com',
+        'password' => Hash::make('OldStrongP@ss1'),
+        'status' => true,
+        'email_verified_at' => now(),
+    ]);
+
+    for ($attempt = 1; $attempt <= 4; $attempt++) {
+        $this->postJson('/api/auth/forgot-password', [
+            'email' => $user->email,
+        ])->assertOk();
+    }
+
+    $this->postJson('/api/auth/forgot-password', [
+        'email' => $user->email,
+    ])->assertStatus(429);
+});
+
 test('registration is limited to four attempts per hour', function () {
     Mail::fake();
 
@@ -401,6 +474,117 @@ test('active user can login by phone', function () {
         ->getJson('/api/auth/me')
         ->assertOk()
         ->assertJsonPath('user.phone', '+15550002222');
+});
+
+test('active user can update profile name and avatar', function () {
+    Storage::fake('public');
+
+    $user = User::factory()->create([
+        'name' => 'Old Name',
+        'email' => 'profile-update@example.com',
+        'phone' => '+15550007777',
+        'status' => true,
+        'email_verified_at' => now(),
+    ]);
+
+    $issuedToken = $user->createToken('frontend');
+
+    $response = $this
+        ->withHeaders([
+            'Authorization' => "Bearer {$issuedToken->plainTextToken}",
+            'Accept' => 'application/json',
+        ])
+        ->post('/api/auth/profile', [
+            'name' => 'New Name',
+            'avatar' => UploadedFile::fake()->image('avatar.jpg', 120, 120),
+        ]);
+
+    $response
+        ->assertOk()
+        ->assertJsonPath('message', 'Profile updated successfully.')
+        ->assertJsonPath('user.name', 'New Name')
+        ->assertJsonPath('user.email', 'profile-update@example.com')
+        ->assertJsonPath('user.phone', '+15550007777');
+
+    $avatarUrl = $response->json('user.avatar');
+    expect($avatarUrl)->toBeString();
+    expect($avatarUrl)->toContain('/storage/avatars/');
+
+    $avatarPath = parse_url((string) $avatarUrl, PHP_URL_PATH);
+    expect($avatarPath)->toBeString();
+
+    $relativePath = trim(str_replace('/storage/', '', (string) $avatarPath), '/');
+    Storage::disk('public')->assertExists($relativePath);
+});
+
+test('profile update rejects email and phone changes', function () {
+    $user = User::factory()->create([
+        'email' => 'profile-immutable@example.com',
+        'phone' => '+15550008888',
+        'status' => true,
+        'email_verified_at' => now(),
+    ]);
+
+    $issuedToken = $user->createToken('frontend');
+
+    $this
+        ->withHeader('Authorization', "Bearer {$issuedToken->plainTextToken}")
+        ->postJson('/api/auth/profile', [
+            'name' => 'Immutable User',
+            'email' => 'new-email@example.com',
+            'phone' => '+15550009999',
+        ])
+        ->assertStatus(422)
+        ->assertJsonValidationErrors(['email', 'phone']);
+});
+
+test('active user can change password from profile', function () {
+    $user = User::factory()->create([
+        'email' => 'profile-password@example.com',
+        'password' => Hash::make('OldStrongP@ss1'),
+        'status' => true,
+        'email_verified_at' => now(),
+    ]);
+
+    $issuedToken = $user->createToken('frontend');
+
+    $this
+        ->withHeader('Authorization', "Bearer {$issuedToken->plainTextToken}")
+        ->postJson('/api/auth/profile', [
+            'name' => $user->name,
+            'current_password' => 'OldStrongP@ss1',
+            'new_password' => 'NewStrongP@ss2',
+            'new_password_confirmation' => 'NewStrongP@ss2',
+        ])
+        ->assertOk()
+        ->assertJsonPath('message', 'Profile updated successfully.');
+
+    $user->refresh();
+
+    expect(Hash::check('NewStrongP@ss2', $user->password))->toBeTrue();
+    expect(Hash::check('OldStrongP@ss1', $user->password))->toBeFalse();
+});
+
+test('profile password change fails with invalid current password', function () {
+    $user = User::factory()->create([
+        'email' => 'profile-password-fail@example.com',
+        'password' => Hash::make('OldStrongP@ss1'),
+        'status' => true,
+        'email_verified_at' => now(),
+    ]);
+
+    $issuedToken = $user->createToken('frontend');
+
+    $this
+        ->withHeader('Authorization', "Bearer {$issuedToken->plainTextToken}")
+        ->postJson('/api/auth/profile', [
+            'name' => $user->name,
+            'current_password' => 'WrongPassword!12',
+            'new_password' => 'NewStrongP@ss2',
+            'new_password_confirmation' => 'NewStrongP@ss2',
+        ])
+        ->assertStatus(422)
+        ->assertJsonValidationErrors(['current_password']);
 });
 
 test('inactive token is revoked on protected route access', function () {

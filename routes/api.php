@@ -9,6 +9,7 @@ Route::prefix('auth')->group(function (): void {
     Route::post('/register', [AuthController::class, 'register']);
     Route::post('/verify-email-code', [AuthController::class, 'verifyEmailCode']);
     Route::post('/resend-verification-code', [AuthController::class, 'resendVerificationCode']);
+    Route::post('/forgot-password', [AuthController::class, 'forgotPassword']);
     Route::post('/login', [AuthController::class, 'login']);
     Route::get('/oauth/{provider}/redirect', [AuthController::class, 'socialRedirect']);
     Route::get('/oauth/{provider}/callback', [AuthController::class, 'socialCallback']);
@@ -19,5 +20,6 @@ Route::prefix('auth')->group(function (): void {
 
     Route::middleware([EnsureUserIsActive::class])->group(function (): void {
         Route::get('/me', [AuthController::class, 'me']);
+        Route::post('/profile', [AuthController::class, 'updateProfile']);
     });
 });

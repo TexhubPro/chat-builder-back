@@ -4,17 +4,21 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Mail\EmailVerificationCodeMail;
+use App\Mail\TemporaryPasswordMail;
 use App\Models\EmailVerificationCode;
 use App\Models\SocialAccount;
 use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\RateLimiter;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Illuminate\Validation\Rules\Password;
@@ -33,6 +37,8 @@ class AuthController extends Controller
     private const VERIFY_CODE_DECAY_SECONDS = 3600;
     private const RESEND_MAX_ATTEMPTS = 4;
     private const RESEND_DECAY_SECONDS = 3600;
+    private const FORGOT_PASSWORD_MAX_ATTEMPTS = 4;
+    private const FORGOT_PASSWORD_DECAY_SECONDS = 3600;
     private const OAUTH_STATE_TTL_MINUTES = 10;
     private const EMAIL_VERIFICATION_CODE_LENGTH = 6;
     private const SUPPORTED_SOCIAL_PROVIDERS = ['github', 'google'];
@@ -65,7 +71,7 @@ class AuthController extends Controller
 
         RateLimiter::hit($registerThrottleKey, self::REGISTER_DECAY_SECONDS);
 
-        if (! $phone) {
+        if (!$phone) {
             throw ValidationException::withMessages([
                 'phone' => 'Phone number format is invalid. Use international format like +12345678900.',
             ]);
@@ -91,7 +97,7 @@ class AuthController extends Controller
                 'password' => $validated['password'],
                 'avatar' => $validated['avatar'] ?? null,
                 'role' => User::ROLE_CUSTOMER,
-                'status' => ! $this->moderationEnabled(),
+                'status' => !$this->moderationEnabled(),
             ]);
 
             $this->issueAndSendVerificationCode($user, false);
@@ -130,13 +136,13 @@ class AuthController extends Controller
 
         $user = User::query()->whereRaw('LOWER(email) = ?', [$email])->first();
 
-        if (! $user) {
+        if (!$user) {
             return response()->json([
                 'message' => 'Invalid verification code.',
             ], 422);
         }
 
-        if (! $user->status && ! $this->isModerationManagedUser($user)) {
+        if (!$user->status && !$this->isModerationManagedUser($user)) {
             $user->emailVerificationCode()?->delete();
             $user->tokens()->delete();
 
@@ -153,7 +159,7 @@ class AuthController extends Controller
 
         $verification = $user->emailVerificationCode;
 
-        if (! $verification) {
+        if (!$verification) {
             return response()->json([
                 'message' => 'Verification code is invalid or expired.',
             ], 422);
@@ -175,7 +181,7 @@ class AuthController extends Controller
             ], 422);
         }
 
-        if (! Hash::check($validated['code'], $verification->code_hash)) {
+        if (!Hash::check($validated['code'], $verification->code_hash)) {
             $verification->increment('attempts');
             $verification->refresh();
 
@@ -246,13 +252,13 @@ class AuthController extends Controller
 
         $user = User::query()->whereRaw('LOWER(email) = ?', [$email])->first();
 
-        if (! $user) {
+        if (!$user) {
             return response()->json([
                 'message' => 'If the account exists, a verification code has been sent.',
             ]);
         }
 
-        if (! $user->status && ! $this->isModerationManagedUser($user)) {
+        if (!$user->status && !$this->isModerationManagedUser($user)) {
             $user->tokens()->delete();
 
             return response()->json([
@@ -305,7 +311,7 @@ class AuthController extends Controller
 
         $user = $this->resolveUserForLogin($loginIdentifier);
 
-        if (! $user || ! Hash::check($validated['password'], $user->password)) {
+        if (!$user || !Hash::check($validated['password'], $user->password)) {
             RateLimiter::hit($throttleKey, self::LOGIN_DECAY_SECONDS);
 
             return response()->json([
@@ -313,7 +319,7 @@ class AuthController extends Controller
             ], 422);
         }
 
-        if (! $user->email_verified_at) {
+        if (!$user->email_verified_at) {
             RateLimiter::hit($throttleKey, self::LOGIN_DECAY_SECONDS);
 
             return response()->json([
@@ -323,7 +329,7 @@ class AuthController extends Controller
             ], 403);
         }
 
-        if (! $user->status) {
+        if (!$user->status) {
             if ($this->isModerationManagedUser($user)) {
                 RateLimiter::clear($throttleKey);
                 $user->tokens()->delete();
@@ -358,6 +364,53 @@ class AuthController extends Controller
             'token' => $token->plainTextToken,
             'token_expires_at' => $token->accessToken->expires_at,
             'user' => $user,
+        ]);
+    }
+
+    public function forgotPassword(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'email' => ['required', 'email', 'max:255'],
+        ]);
+
+        $email = Str::lower(trim($validated['email']));
+        $throttleKey = $this->forgotPasswordThrottleKey($email, (string) $request->ip());
+
+        if (RateLimiter::tooManyAttempts($throttleKey, self::FORGOT_PASSWORD_MAX_ATTEMPTS)) {
+            return response()->json([
+                'message' => 'Too many password reset requests. Please try again later.',
+                'retry_after' => RateLimiter::availableIn($throttleKey),
+            ], 429);
+        }
+
+        RateLimiter::hit($throttleKey, self::FORGOT_PASSWORD_DECAY_SECONDS);
+
+        $user = User::query()->whereRaw('LOWER(email) = ?', [$email])->first();
+
+        if (!$user) {
+            return response()->json([
+                'message' => 'If the account exists, a temporary password has been sent.',
+            ]);
+        }
+
+        $temporaryPassword = Str::password(14);
+
+        DB::transaction(function () use ($user, $temporaryPassword): void {
+            $user->forceFill([
+                'password' => $temporaryPassword,
+                'remember_token' => Str::random(60),
+            ])->save();
+
+            $user->tokens()->delete();
+
+            Mail::to($user->email)->send(new TemporaryPasswordMail(
+                name: $user->name,
+                temporaryPassword: $temporaryPassword,
+            ));
+        });
+
+        return response()->json([
+            'message' => 'If the account exists, a temporary password has been sent.',
         ]);
     }
 
@@ -413,7 +466,7 @@ class AuthController extends Controller
 
         $user = $this->resolveOrCreateSocialUser($provider, $socialUser);
 
-        if (! $user->status) {
+        if (!$user->status) {
             $user->tokens()->delete();
 
             return response()->json([
@@ -441,17 +494,92 @@ class AuthController extends Controller
         ]);
     }
 
-    public function moderationStatus(Request $request): JsonResponse
+    public function updateProfile(Request $request): JsonResponse
     {
         $user = $request->user();
 
-        if (! $user instanceof User) {
+        if (!$user instanceof User) {
             return response()->json([
                 'message' => 'Unauthorized.',
             ], 401);
         }
 
-        if (! $user->email_verified_at) {
+        $validated = $request->validate([
+            'name' => ['required', 'string', 'min:2', 'max:255'],
+            'avatar' => ['nullable', 'image', 'mimes:jpg,jpeg,png,webp,avif', 'max:4096'],
+            'remove_avatar' => ['nullable', 'boolean'],
+            'email' => ['prohibited'],
+            'phone' => ['prohibited'],
+            'current_password' => ['nullable', 'string', 'max:255', 'required_with:new_password'],
+            'new_password' => [
+                'nullable',
+                'string',
+                'max:255',
+                'required_with:current_password',
+                'confirmed',
+                Password::min(10)->letters()->mixedCase()->numbers()->symbols(),
+            ],
+        ]);
+
+        $normalizedName = trim((string) $validated['name']);
+        $removeAvatar = (bool) ($validated['remove_avatar'] ?? false);
+        $avatarFile = $request->file('avatar');
+
+        $updates = [];
+
+        if ($normalizedName !== $user->name) {
+            $updates['name'] = $normalizedName;
+        }
+
+        if ($avatarFile instanceof UploadedFile) {
+            $updates['avatar'] = $this->storeUserAvatar($avatarFile);
+            $this->deleteUserAvatarFile($user->avatar);
+        } elseif ($removeAvatar && $user->avatar !== null) {
+            $this->deleteUserAvatarFile($user->avatar);
+            $updates['avatar'] = null;
+        }
+
+        $newPassword = $validated['new_password'] ?? null;
+
+        if (is_string($newPassword) && $newPassword !== '') {
+            $currentPassword = (string) ($validated['current_password'] ?? '');
+
+            if (!Hash::check($currentPassword, $user->password)) {
+                throw ValidationException::withMessages([
+                    'current_password' => 'Current password is incorrect.',
+                ]);
+            }
+
+            if (Hash::check($newPassword, $user->password)) {
+                throw ValidationException::withMessages([
+                    'new_password' => 'The new password must be different from the current password.',
+                ]);
+            }
+
+            $updates['password'] = $newPassword;
+        }
+
+        if ($updates !== []) {
+            $user->forceFill($updates)->save();
+        }
+
+        return response()->json([
+            'message' => 'Profile updated successfully.',
+            'user' => $user->fresh(),
+        ]);
+    }
+
+    public function moderationStatus(Request $request): JsonResponse
+    {
+        $user = $request->user();
+
+        if (!$user instanceof User) {
+            return response()->json([
+                'message' => 'Unauthorized.',
+            ], 401);
+        }
+
+        if (!$user->email_verified_at) {
             $user->currentAccessToken()?->delete();
 
             return response()->json([
@@ -459,7 +587,7 @@ class AuthController extends Controller
             ], 403);
         }
 
-        if (! $user->status && ! $this->isModerationManagedUser($user)) {
+        if (!$user->status && !$this->isModerationManagedUser($user)) {
             $user->currentAccessToken()?->delete();
 
             return response()->json([
@@ -557,7 +685,7 @@ class AuthController extends Controller
 
     private function verificationResendRetryAfter(?EmailVerificationCode $verification): int
     {
-        if (! $verification || ! $verification->sent_at) {
+        if (!$verification || !$verification->sent_at) {
             return 0;
         }
 
@@ -579,7 +707,7 @@ class AuthController extends Controller
 
     private function isModerationManagedUser(User $user): bool
     {
-        return $this->moderationEnabled() && ! $user->status;
+        return $this->moderationEnabled() && !$user->status;
     }
 
     private function issueFrontendToken(User $user, string $deviceName = 'frontend'): NewAccessToken
@@ -618,7 +746,7 @@ class AuthController extends Controller
 
         $normalizedPhone = $this->normalizePhone($loginIdentifier);
 
-        if (! $normalizedPhone) {
+        if (!$normalizedPhone) {
             return null;
         }
 
@@ -627,52 +755,85 @@ class AuthController extends Controller
 
     private function loginThrottleKey(string $loginIdentifier, string $ipAddress): string
     {
-        return 'auth:login:'.hash('sha256', Str::lower($loginIdentifier).'|'.$ipAddress);
+        return 'auth:login:' . hash('sha256', Str::lower($loginIdentifier) . '|' . $ipAddress);
     }
 
     private function resendThrottleKey(string $email, string $ipAddress): string
     {
-        return 'auth:verify-resend:'.hash('sha256', Str::lower($email).'|'.$ipAddress);
+        return 'auth:verify-resend:' . hash('sha256', Str::lower($email) . '|' . $ipAddress);
     }
 
     private function registerThrottleKey(string $ipAddress): string
     {
-        return 'auth:register:'.hash('sha256', $ipAddress);
+        return 'auth:register:' . hash('sha256', $ipAddress);
     }
 
     private function verifyCodeThrottleKey(string $email, string $ipAddress): string
     {
-        return 'auth:verify-code:'.hash('sha256', Str::lower($email).'|'.$ipAddress);
+        return 'auth:verify-code:' . hash('sha256', Str::lower($email) . '|' . $ipAddress);
+    }
+
+    private function forgotPasswordThrottleKey(string $email, string $ipAddress): string
+    {
+        return 'auth:forgot-password:' . hash('sha256', Str::lower($email) . '|' . $ipAddress);
     }
 
     private function normalizePhone(string $phone): ?string
     {
         $normalized = preg_replace('/[^\d+]/', '', trim($phone));
 
-        if (! is_string($normalized) || $normalized === '') {
+        if (!is_string($normalized) || $normalized === '') {
             return null;
         }
 
         if (Str::startsWith($normalized, '00')) {
-            $normalized = '+'.substr($normalized, 2);
+            $normalized = '+' . substr($normalized, 2);
         }
 
-        if (! Str::startsWith($normalized, '+')) {
-            $normalized = '+'.$normalized;
+        if (!Str::startsWith($normalized, '+')) {
+            $normalized = '+' . $normalized;
         }
 
-        if (! preg_match('/^\+[1-9]\d{7,14}$/', $normalized)) {
+        if (!preg_match('/^\+[1-9]\d{7,14}$/', $normalized)) {
             return null;
         }
 
         return $normalized;
     }
 
+    private function storeUserAvatar(UploadedFile $avatar): string
+    {
+        $path = $avatar->store('avatars', 'public');
+
+        return URL::to(Storage::disk('public')->url($path));
+    }
+
+    private function deleteUserAvatarFile(?string $avatarUrl): void
+    {
+        if (!is_string($avatarUrl) || trim($avatarUrl) === '') {
+            return;
+        }
+
+        $path = parse_url($avatarUrl, PHP_URL_PATH);
+
+        if (!is_string($path) || !Str::startsWith($path, '/storage/')) {
+            return;
+        }
+
+        $relativePath = trim(Str::after($path, '/storage/'), '/');
+
+        if ($relativePath === '') {
+            return;
+        }
+
+        Storage::disk('public')->delete($relativePath);
+    }
+
     private function assertSupportedProvider(string $provider): string
     {
         $provider = Str::lower(trim($provider));
 
-        if (! in_array($provider, self::SUPPORTED_SOCIAL_PROVIDERS, true)) {
+        if (!in_array($provider, self::SUPPORTED_SOCIAL_PROVIDERS, true)) {
             throw ValidationException::withMessages([
                 'provider' => 'Unsupported social provider.',
             ]);
@@ -683,7 +844,7 @@ class AuthController extends Controller
 
     private function oauthStateCacheKey(string $provider, string $state): string
     {
-        return 'oauth:state:'.$provider.':'.hash('sha256', $state);
+        return 'oauth:state:' . $provider . ':' . hash('sha256', $state);
     }
 
     private function assertProviderIsConfigured(string $provider): void
@@ -696,7 +857,7 @@ class AuthController extends Controller
             || empty($providerConfig['redirect'])
         ) {
             throw ValidationException::withMessages([
-                'provider' => ucfirst($provider).' OAuth is not configured on the server.',
+                'provider' => ucfirst($provider) . ' OAuth is not configured on the server.',
             ]);
         }
     }
@@ -711,7 +872,7 @@ class AuthController extends Controller
 
         $statePayload = Cache::pull($this->oauthStateCacheKey($provider, $state));
 
-        if (! is_array($statePayload)) {
+        if (!is_array($statePayload)) {
             throw ValidationException::withMessages([
                 'state' => 'OAuth state is invalid or expired.',
             ]);
@@ -720,7 +881,7 @@ class AuthController extends Controller
         $ipMatches = ($statePayload['ip'] ?? null) === $request->ip();
         $uaMatches = ($statePayload['ua_hash'] ?? null) === hash('sha256', (string) $request->userAgent());
 
-        if (! $ipMatches || ! $uaMatches) {
+        if (!$ipMatches || !$uaMatches) {
             throw ValidationException::withMessages([
                 'state' => 'OAuth state validation failed.',
             ]);
@@ -762,10 +923,10 @@ class AuthController extends Controller
                 $user = $socialAccount->user;
 
                 $updates = [];
-                if ($providerAvatar && ! $user->avatar) {
+                if ($providerAvatar && !$user->avatar) {
                     $updates['avatar'] = $providerAvatar;
                 }
-                if (! $user->email_verified_at) {
+                if (!$user->email_verified_at) {
                     $updates['email_verified_at'] = now();
                 }
 
@@ -778,7 +939,7 @@ class AuthController extends Controller
 
             $user = User::query()->whereRaw('LOWER(email) = ?', [$providerEmail])->first();
 
-            if (! $user) {
+            if (!$user) {
                 $user = User::create([
                     'name' => $providerName === '' ? 'User' : $providerName,
                     'email' => $providerEmail,
@@ -794,10 +955,10 @@ class AuthController extends Controller
                 ])->save();
             } else {
                 $updates = [];
-                if ($providerAvatar && ! $user->avatar) {
+                if ($providerAvatar && !$user->avatar) {
                     $updates['avatar'] = $providerAvatar;
                 }
-                if (! $user->email_verified_at) {
+                if (!$user->email_verified_at) {
                     $updates['email_verified_at'] = now();
                 }
 
