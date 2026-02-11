@@ -36,3 +36,6 @@ Route::prefix('billing')
         Route::get('/invoices', [InvoiceController::class, 'index']);
         Route::post('/invoices/{invoice}/pay', [InvoiceController::class, 'pay']);
     });
+
+Route::post('/billing/alif/callback', [InvoiceController::class, 'alifCallback'])
+    ->name('api.billing.alif.callback');
