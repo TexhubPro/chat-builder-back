@@ -1,6 +1,9 @@
 <?php
 
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\CompanySubscriptionController;
+use App\Http\Controllers\Api\InvoiceController;
+use App\Http\Controllers\Api\SubscriptionPlanController;
 use App\Http\Middleware\EnsureApiTokenIsValid;
 use App\Http\Middleware\EnsureUserIsActive;
 use Illuminate\Support\Facades\Route;
@@ -23,3 +26,13 @@ Route::prefix('auth')->group(function (): void {
         Route::post('/profile', [AuthController::class, 'updateProfile']);
     });
 });
+
+Route::prefix('billing')
+    ->middleware([EnsureUserIsActive::class])
+    ->group(function (): void {
+        Route::get('/plans', [SubscriptionPlanController::class, 'index']);
+        Route::get('/subscription', [CompanySubscriptionController::class, 'show']);
+        Route::post('/checkout', [CompanySubscriptionController::class, 'checkout']);
+        Route::get('/invoices', [InvoiceController::class, 'index']);
+        Route::post('/invoices/{invoice}/pay', [InvoiceController::class, 'pay']);
+    });
