@@ -55,6 +55,8 @@ class InstallMetaCommand extends Command
             'META_INSTAGRAM_GRAPH_BASE' => 'https://graph.instagram.com',
             'META_INSTAGRAM_API_VERSION' => 'v20.0',
             'META_INSTAGRAM_AUTH_URL' => '',
+            'META_INSTAGRAM_AUTO_REPLY_ENABLED' => 'true',
+            'META_INSTAGRAM_VOICE_REPLY_FOR_AUDIO' => 'true',
         ];
 
         $lines = [];

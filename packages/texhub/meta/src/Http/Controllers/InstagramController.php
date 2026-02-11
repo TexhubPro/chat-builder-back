@@ -2,6 +2,7 @@
 
 namespace TexHub\Meta\Http\Controllers;
 
+use App\Services\InstagramMainWebhookService;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
 use Illuminate\Support\Facades\Auth;
@@ -244,6 +245,8 @@ class InstagramController extends Controller
             return;
         }
 
+        $mainWebhookService = app(InstagramMainWebhookService::class);
+
         foreach ($payload['entry'] as $entry) {
             if (! is_array($entry)) {
                 continue;
@@ -286,6 +289,14 @@ class InstagramController extends Controller
                 $sentAt = is_numeric($timestamp) ? now()->setTimestamp((int) ($timestamp / 1000)) : null;
 
                 $this->storeEventMessage($chat->id, $senderId, $recipientId, $event, $sentAt);
+
+                try {
+                    $mainWebhookService->processEvent($event);
+                } catch (Throwable $exception) {
+                    $this->logError('Instagram main webhook bridge failed', [
+                        'error' => $exception->getMessage(),
+                    ]);
+                }
             }
         }
     }

@@ -30,6 +30,7 @@ class User extends Authenticatable
         'avatar',
         'role',
         'status',
+        'openai_assistant_updated_at',
         'password',
     ];
 
@@ -53,6 +54,7 @@ class User extends Authenticatable
         return [
             'email_verified_at' => 'datetime',
             'status' => 'boolean',
+            'openai_assistant_updated_at' => 'datetime',
             'password' => 'hashed',
         ];
     }

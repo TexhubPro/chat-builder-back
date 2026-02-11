@@ -1,0 +1,820 @@
+<?php
+
+namespace App\Services;
+
+use App\Models\Assistant;
+use App\Models\AssistantChannel;
+use App\Models\Chat;
+use App\Models\ChatMessage;
+use App\Models\Company;
+use App\Models\User;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
+use TexHub\Meta\Facades\Instagram as InstagramFacade;
+use TexHub\Meta\Models\InstagramIntegration;
+use TexHub\OpenAi\Assistant as OpenAiAssistantClient;
+use Throwable;
+
+class InstagramMainWebhookService
+{
+    public function __construct(
+        private CompanySubscriptionService $subscriptionService,
+        private OpenAiAssistantService $openAiAssistantService,
+        private OpenAiAssistantClient $openAiClient,
+    ) {}
+
+    public function processEvent(array $event): void
+    {
+        if ($this->isEchoEvent($event)) {
+            return;
+        }
+
+        $senderId = $this->extractSenderId($event);
+        $recipientId = $this->extractRecipientId($event);
+
+        if ($senderId === null || $recipientId === null) {
+            return;
+        }
+
+        $integration = $this->resolveIntegration($recipientId);
+
+        if (! $integration) {
+            return;
+        }
+
+        $user = User::query()->find($integration->user_id);
+        if (! $user) {
+            return;
+        }
+
+        $company = $this->subscriptionService->provisionDefaultWorkspaceForUser($user->id, $user->name);
+        $assistantChannel = $this->resolveAssistantChannel($company, $integration, $recipientId);
+        $assistant = $this->resolveAssistant($company, $assistantChannel);
+
+        $chat = $this->resolveChat(
+            $company,
+            $assistant,
+            $assistantChannel,
+            $integration,
+            $senderId,
+            $recipientId,
+            $event,
+        );
+
+        $parts = $this->normalizeInboundParts($event);
+        $hasReplyableContent = $this->hasReplyableInboundContent($parts);
+
+        if ($parts === []) {
+            return;
+        }
+
+        $createdInboundMessages = [];
+        foreach ($parts as $part) {
+            $channelMessageId = $part['channel_message_id'];
+
+            $existing = ChatMessage::query()
+                ->where('chat_id', $chat->id)
+                ->where('channel_message_id', $channelMessageId)
+                ->first();
+
+            if ($existing) {
+                continue;
+            }
+
+            $createdInboundMessages[] = ChatMessage::query()->create([
+                'user_id' => $company->user_id,
+                'company_id' => $company->id,
+                'chat_id' => $chat->id,
+                'assistant_id' => $assistant?->id ?? $chat->assistant_id,
+                'sender_type' => ChatMessage::SENDER_CUSTOMER,
+                'direction' => ChatMessage::DIRECTION_INBOUND,
+                'status' => 'received',
+                'channel_message_id' => $channelMessageId,
+                'message_type' => $part['message_type'],
+                'text' => $part['text'],
+                'media_url' => $part['media_url'],
+                'media_mime_type' => $part['media_mime_type'],
+                'link_url' => $part['link_url'],
+                'payload' => $part['payload'],
+                'sent_at' => $part['sent_at'],
+            ]);
+        }
+
+        if ($createdInboundMessages === []) {
+            return;
+        }
+
+        $lastInbound = $createdInboundMessages[array_key_last($createdInboundMessages)];
+        $this->touchChatSnapshot($chat, $lastInbound, incrementUnreadBy: count($createdInboundMessages));
+
+        [$hasActiveSubscription, $hasRemainingIncludedChats] = $this->subscriptionStateForAutoReply($company);
+        $this->subscriptionService->incrementChatUsage($company, 1);
+
+        if (! $this->shouldAutoReply(
+            $chat,
+            $assistant,
+            $hasActiveSubscription,
+            $hasRemainingIncludedChats,
+            $hasReplyableContent
+        )) {
+            return;
+        }
+
+        $prompt = $this->buildPromptFromInboundParts($parts);
+        $assistantResponse = $this->generateAssistantResponse($assistant, $chat, $prompt, $parts);
+
+        if ($assistantResponse === null || trim($assistantResponse) === '') {
+            return;
+        }
+
+        [$sentMessageId, $outboundType, $outboundMediaUrl] = $this->sendAssistantResponseToInstagram(
+            $integration,
+            $recipientId,
+            $senderId,
+            $assistantResponse,
+            $parts
+        );
+
+        if ($sentMessageId === null) {
+            return;
+        }
+
+        $outboundMessage = ChatMessage::query()->create([
+            'user_id' => $company->user_id,
+            'company_id' => $company->id,
+            'chat_id' => $chat->id,
+            'assistant_id' => $assistant->id,
+            'sender_type' => ChatMessage::SENDER_ASSISTANT,
+            'direction' => ChatMessage::DIRECTION_OUTBOUND,
+            'status' => 'sent',
+            'channel_message_id' => $sentMessageId,
+            'message_type' => $outboundType,
+            'text' => $assistantResponse,
+            'media_url' => $outboundMediaUrl,
+            'sent_at' => now(),
+        ]);
+
+        $this->touchChatSnapshot($chat, $outboundMessage, incrementUnreadBy: 0);
+    }
+
+    private function shouldAutoReply(
+        Chat $chat,
+        ?Assistant $assistant,
+        bool $hasActiveSubscription,
+        bool $hasRemainingIncludedChats,
+        bool $hasReplyableContent,
+    ): bool {
+        if (! (bool) config('meta.instagram.auto_reply_enabled', true)) {
+            return false;
+        }
+
+        if (! $hasReplyableContent) {
+            return false;
+        }
+
+        if (! $hasActiveSubscription || ! $hasRemainingIncludedChats) {
+            return false;
+        }
+
+        if (! $assistant || ! $assistant->is_active) {
+            return false;
+        }
+
+        if (! $this->isChatActiveForAutoReply($chat)) {
+            return false;
+        }
+
+        return $this->openAiAssistantService->isConfigured();
+    }
+
+    private function hasReplyableInboundContent(array $parts): bool
+    {
+        foreach ($parts as $part) {
+            $kind = (string) ($part['kind'] ?? '');
+
+            if ($kind !== 'event') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function isChatActiveForAutoReply(Chat $chat): bool
+    {
+        $metadata = is_array($chat->metadata) ? $chat->metadata : [];
+
+        if (array_key_exists('is_active', $metadata) && $metadata['is_active'] === false) {
+            return false;
+        }
+
+        return in_array((string) $chat->status, [
+            Chat::STATUS_OPEN,
+            Chat::STATUS_PENDING,
+        ], true);
+    }
+
+    private function subscriptionStateForAutoReply(Company $company): array
+    {
+        $subscription = $company->subscription()->with('plan')->first();
+
+        if (! $subscription) {
+            return [false, false];
+        }
+
+        $this->subscriptionService->synchronizeBillingPeriods($subscription);
+        $subscription->refresh()->load('plan');
+
+        if (! $subscription->isActiveAt()) {
+            return [false, false];
+        }
+
+        $includedChats = max($subscription->resolvedIncludedChats(), 0);
+        $usedChats = max((int) $subscription->chat_count_current_period, 0);
+
+        return [true, $usedChats < $includedChats];
+    }
+
+    private function resolveIntegration(string $recipientId): ?InstagramIntegration
+    {
+        return InstagramIntegration::query()
+            ->where('is_active', true)
+            ->where(function ($builder) use ($recipientId): void {
+                $builder
+                    ->where('receiver_id', $recipientId)
+                    ->orWhere('instagram_user_id', $recipientId);
+            })
+            ->orderByDesc('id')
+            ->first();
+    }
+
+    private function resolveAssistantChannel(
+        Company $company,
+        InstagramIntegration $integration,
+        string $recipientId,
+    ): ?AssistantChannel {
+        return $company->assistantChannels()
+            ->with('assistant')
+            ->where('channel', AssistantChannel::CHANNEL_INSTAGRAM)
+            ->where('is_active', true)
+            ->where(function ($builder) use ($integration, $recipientId): void {
+                $builder
+                    ->where('external_account_id', $recipientId)
+                    ->orWhere('external_account_id', (string) $integration->instagram_user_id)
+                    ->orWhere('external_account_id', (string) ($integration->receiver_id ?? ''));
+            })
+            ->orderBy('id')
+            ->first();
+    }
+
+    private function resolveAssistant(
+        Company $company,
+        ?AssistantChannel $assistantChannel,
+    ): ?Assistant {
+        if ($assistantChannel?->assistant && $assistantChannel->assistant->is_active) {
+            return $assistantChannel->assistant;
+        }
+
+        return $company->assistants()
+            ->where('is_active', true)
+            ->orderBy('id')
+            ->first();
+    }
+
+    private function resolveChat(
+        Company $company,
+        ?Assistant $assistant,
+        ?AssistantChannel $assistantChannel,
+        InstagramIntegration $integration,
+        string $senderId,
+        string $recipientId,
+        array $event,
+    ): Chat {
+        $channelChatId = $recipientId.':'.$senderId;
+        $chat = Chat::query()->firstOrNew([
+            'company_id' => $company->id,
+            'channel' => 'instagram',
+            'channel_chat_id' => $channelChatId,
+        ]);
+
+        $existingMetadata = is_array($chat->metadata) ? $chat->metadata : [];
+        $incomingMetadata = [
+            'source' => 'meta_instagram_main_webhook',
+            'instagram' => [
+                'integration_id' => $integration->id,
+                'instagram_user_id' => $integration->instagram_user_id,
+                'receiver_id' => $recipientId,
+            ],
+        ];
+
+        $chat->fill([
+            'user_id' => $company->user_id,
+            'assistant_id' => $assistant?->id ?? $chat->assistant_id,
+            'assistant_channel_id' => $assistantChannel?->id ?? $chat->assistant_channel_id,
+            'channel_user_id' => $senderId,
+            'name' => $this->extractChatDisplayName($event) ?? $chat->name ?? ('Instagram '.$senderId),
+            'avatar' => $chat->avatar,
+            'status' => $chat->status ?: Chat::STATUS_OPEN,
+            'metadata' => array_replace_recursive($existingMetadata, $incomingMetadata),
+        ]);
+
+        $chat->save();
+
+        return $chat;
+    }
+
+    private function extractChatDisplayName(array $event): ?string
+    {
+        $sender = $event['sender'] ?? null;
+
+        if (is_array($sender)) {
+            $name = trim((string) ($sender['name'] ?? ''));
+
+            if ($name !== '') {
+                return Str::limit($name, 160, '');
+            }
+        }
+
+        return null;
+    }
+
+    private function normalizeInboundParts(array $event): array
+    {
+        $message = is_array($event['message'] ?? null) ? $event['message'] : [];
+        $payload = is_array($event['payload'] ?? null) ? $event['payload'] : $event;
+        $timestamp = $event['timestamp'] ?? null;
+        $sentAt = is_numeric($timestamp)
+            ? Carbon::createFromTimestampMs((int) $timestamp)
+            : now();
+
+        $parts = [];
+        $baseMessageId = trim((string) ($message['mid'] ?? $event['mid'] ?? ''));
+        if ($baseMessageId === '') {
+            $baseMessageId = 'ig-'.substr(sha1(json_encode([
+                'sender' => $event['sender'] ?? null,
+                'recipient' => $event['recipient'] ?? null,
+                'timestamp' => $event['timestamp'] ?? null,
+                'message' => $message,
+            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: ''), 0, 40);
+        }
+
+        $text = trim((string) ($message['text'] ?? ''));
+        if ($text !== '') {
+            $linkUrl = $this->extractFirstUrl($text);
+            $messageType = $linkUrl !== null && $this->isOnlyUrl($text)
+                ? ChatMessage::TYPE_LINK
+                : ChatMessage::TYPE_TEXT;
+
+            $parts[] = [
+                'channel_message_id' => $this->partMessageId($baseMessageId, 'text'),
+                'message_type' => $messageType,
+                'text' => $text,
+                'media_url' => null,
+                'media_mime_type' => null,
+                'link_url' => $linkUrl,
+                'payload' => $payload,
+                'sent_at' => $sentAt,
+                'kind' => 'text',
+            ];
+        }
+
+        $attachments = is_array($message['attachments'] ?? null) ? $message['attachments'] : [];
+
+        foreach ($attachments as $index => $attachment) {
+            if (! is_array($attachment)) {
+                continue;
+            }
+
+            $type = Str::lower(trim((string) ($attachment['type'] ?? '')));
+            $attachmentPayload = is_array($attachment['payload'] ?? null) ? $attachment['payload'] : [];
+            $url = $this->extractAttachmentUrl($attachmentPayload);
+
+            $mappedType = match ($type) {
+                'image', 'story_mention', 'story_reply' => ChatMessage::TYPE_IMAGE,
+                'video' => ChatMessage::TYPE_VIDEO,
+                'audio' => ChatMessage::TYPE_VOICE,
+                'file' => ChatMessage::TYPE_FILE,
+                'share' => ChatMessage::TYPE_LINK,
+                default => ChatMessage::TYPE_FILE,
+            };
+
+            $parts[] = [
+                'channel_message_id' => $this->partMessageId($baseMessageId, 'attachment-'.$index),
+                'message_type' => $mappedType,
+                'text' => null,
+                'media_url' => $mappedType === ChatMessage::TYPE_LINK ? null : $url,
+                'media_mime_type' => null,
+                'link_url' => $mappedType === ChatMessage::TYPE_LINK ? $url : null,
+                'payload' => $payload,
+                'sent_at' => $sentAt,
+                'kind' => $type !== '' ? $type : 'attachment',
+            ];
+        }
+
+        if ($parts === []) {
+            $summary = $this->summarizePayload($payload);
+
+            if ($summary === null) {
+                return [];
+            }
+
+            $parts[] = [
+                'channel_message_id' => $this->partMessageId($baseMessageId, 'event'),
+                'message_type' => ChatMessage::TYPE_TEXT,
+                'text' => $summary,
+                'media_url' => null,
+                'media_mime_type' => null,
+                'link_url' => null,
+                'payload' => $payload,
+                'sent_at' => $sentAt,
+                'kind' => 'event',
+            ];
+        }
+
+        return $parts;
+    }
+
+    private function summarizePayload(array $payload): ?string
+    {
+        if (isset($payload['reaction'])) {
+            $reaction = trim((string) ($payload['reaction']['reaction'] ?? $payload['reaction']['emoji'] ?? ''));
+
+            return $reaction !== '' ? 'Reaction: '.$reaction : 'Reaction received';
+        }
+
+        if (isset($payload['read'])) {
+            return 'Message seen';
+        }
+
+        if (isset($payload['postback'])) {
+            $title = trim((string) ($payload['postback']['title'] ?? ''));
+
+            return $title !== '' ? 'Postback: '.$title : 'Postback received';
+        }
+
+        return null;
+    }
+
+    private function buildPromptFromInboundParts(array $parts): string
+    {
+        $lines = [
+            'Incoming customer message from Instagram:',
+        ];
+
+        foreach ($parts as $part) {
+            $type = (string) ($part['message_type'] ?? ChatMessage::TYPE_TEXT);
+            $text = trim((string) ($part['text'] ?? ''));
+            $mediaUrl = trim((string) ($part['media_url'] ?? ''));
+            $linkUrl = trim((string) ($part['link_url'] ?? ''));
+
+            if ($type === ChatMessage::TYPE_TEXT && $text !== '') {
+                $lines[] = '- Text: '.$text;
+                continue;
+            }
+
+            if ($type === ChatMessage::TYPE_LINK) {
+                $lines[] = '- Link: '.($linkUrl !== '' ? $linkUrl : $text);
+                continue;
+            }
+
+            if ($type === ChatMessage::TYPE_IMAGE) {
+                $lines[] = '- Image URL: '.$mediaUrl;
+                continue;
+            }
+
+            if ($type === ChatMessage::TYPE_VIDEO) {
+                $lines[] = '- Video URL: '.$mediaUrl;
+                continue;
+            }
+
+            if ($type === ChatMessage::TYPE_VOICE || $type === ChatMessage::TYPE_AUDIO) {
+                $lines[] = '- Voice/audio URL: '.$mediaUrl;
+                continue;
+            }
+
+            if ($type === ChatMessage::TYPE_FILE) {
+                $lines[] = '- File URL: '.$mediaUrl;
+                continue;
+            }
+
+            if ($text !== '') {
+                $lines[] = '- Message: '.$text;
+            }
+        }
+
+        $lines[] = 'Reply in the same language as customer, concise and helpful.';
+
+        return implode("\n", $lines);
+    }
+
+    private function generateAssistantResponse(
+        Assistant $assistant,
+        Chat $chat,
+        string $prompt,
+        array $parts,
+    ): ?string {
+        if (! $assistant->openai_assistant_id) {
+            try {
+                $this->openAiAssistantService->syncAssistant($assistant);
+                $assistant->refresh();
+            } catch (Throwable) {
+                return null;
+            }
+        }
+
+        $openAiAssistantId = trim((string) ($assistant->openai_assistant_id ?? ''));
+
+        if ($openAiAssistantId === '') {
+            return null;
+        }
+
+        $chatMetadata = is_array($chat->metadata) ? $chat->metadata : [];
+        $threadMap = is_array($chatMetadata['openai_threads'] ?? null)
+            ? $chatMetadata['openai_threads']
+            : [];
+
+        $threadKey = (string) $assistant->id;
+        $threadId = trim((string) ($threadMap[$threadKey] ?? ''));
+
+        if ($threadId === '') {
+            $threadId = (string) ($this->openAiClient->createThread([], [
+                'chat_id' => (string) $chat->id,
+                'company_id' => (string) $chat->company_id,
+                'assistant_id' => (string) $assistant->id,
+            ]) ?? '');
+
+            if ($threadId === '') {
+                return null;
+            }
+
+            $threadMap[$threadKey] = $threadId;
+            $chatMetadata['openai_threads'] = $threadMap;
+
+            $chat->forceFill([
+                'metadata' => $chatMetadata,
+            ])->save();
+        }
+
+        $imageUrls = [];
+        foreach ($parts as $part) {
+            if (($part['message_type'] ?? '') === ChatMessage::TYPE_IMAGE) {
+                $url = trim((string) ($part['media_url'] ?? ''));
+
+                if ($url !== '') {
+                    $imageUrls[] = $url;
+                }
+            }
+        }
+
+        $messageId = null;
+
+        if ($imageUrls !== []) {
+            $messageId = $this->openAiClient->sendImageUrlMessage(
+                $threadId,
+                $imageUrls,
+                $prompt,
+                'auto',
+                [
+                    'chat_id' => (string) $chat->id,
+                    'assistant_id' => (string) $assistant->id,
+                ],
+                'user',
+            );
+        }
+
+        if (! is_string($messageId) || trim($messageId) === '') {
+            $messageId = $this->openAiClient->sendTextMessage(
+                $threadId,
+                $prompt,
+                [
+                    'chat_id' => (string) $chat->id,
+                    'assistant_id' => (string) $assistant->id,
+                ],
+                'user',
+            );
+        }
+
+        if (! is_string($messageId) || trim($messageId) === '') {
+            return null;
+        }
+
+        $responseText = $this->openAiClient->runThreadAndGetResponse(
+            $threadId,
+            $openAiAssistantId,
+            [],
+            20,
+            900,
+        );
+
+        $normalized = trim((string) ($responseText ?? ''));
+
+        return $normalized === '' ? null : $normalized;
+    }
+
+    private function sendAssistantResponseToInstagram(
+        InstagramIntegration $integration,
+        string $recipientId,
+        string $customerInstagramUserId,
+        string $assistantResponse,
+        array $parts,
+    ): array {
+        $accessToken = trim((string) $integration->access_token);
+        $igUserId = trim((string) ($integration->receiver_id ?: $recipientId));
+
+        if ($accessToken === '' || $igUserId === '') {
+            return [null, ChatMessage::TYPE_TEXT, null];
+        }
+
+        $shouldReplyAsVoice = (bool) config('meta.instagram.voice_reply_for_audio', true)
+            && $this->containsVoiceInbound($parts);
+
+        if ($shouldReplyAsVoice) {
+            $audioUrl = $this->synthesizeSpeechUrl($assistantResponse);
+
+            if ($audioUrl !== null) {
+                $audioMessageId = InstagramFacade::sendMediaMessage(
+                    $igUserId,
+                    $customerInstagramUserId,
+                    'audio',
+                    $audioUrl,
+                    false,
+                    $accessToken,
+                    false,
+                );
+
+                if (is_string($audioMessageId) && trim($audioMessageId) !== '') {
+                    return [$audioMessageId, ChatMessage::TYPE_VOICE, $audioUrl];
+                }
+            }
+        }
+
+        $textMessageId = InstagramFacade::sendTextMessage(
+            $igUserId,
+            $customerInstagramUserId,
+            $assistantResponse,
+            $accessToken,
+            false,
+        );
+
+        if (! is_string($textMessageId) || trim($textMessageId) === '') {
+            return [null, ChatMessage::TYPE_TEXT, null];
+        }
+
+        return [$textMessageId, ChatMessage::TYPE_TEXT, null];
+    }
+
+    private function synthesizeSpeechUrl(string $text): ?string
+    {
+        $responseFormat = trim((string) config('openai.tts.response_format', 'mp3'));
+        $extension = $responseFormat !== '' ? $responseFormat : 'mp3';
+        $relativePath = 'assistant-audio/'.now()->format('Y/m/d').'/'.Str::uuid().'.'.$extension;
+
+        $disk = Storage::disk('public');
+        $absolutePath = $disk->path($relativePath);
+        $directory = dirname($absolutePath);
+
+        if (! is_dir($directory)) {
+            @mkdir($directory, 0775, true);
+        }
+
+        $savedPath = $this->openAiClient->createSpeech($text, [], $absolutePath);
+
+        if (! is_string($savedPath) || $savedPath === '') {
+            return null;
+        }
+
+        $url = $disk->url($relativePath);
+
+        if (Str::startsWith($url, ['http://', 'https://'])) {
+            return $url;
+        }
+
+        $base = rtrim((string) config('app.url', ''), '/');
+
+        if ($base === '') {
+            return null;
+        }
+
+        return $base.'/'.ltrim($url, '/');
+    }
+
+    private function containsVoiceInbound(array $parts): bool
+    {
+        foreach ($parts as $part) {
+            $type = (string) ($part['message_type'] ?? '');
+
+            if ($type === ChatMessage::TYPE_VOICE || $type === ChatMessage::TYPE_AUDIO) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function touchChatSnapshot(Chat $chat, ChatMessage $message, int $incrementUnreadBy): void
+    {
+        $chat->last_message_preview = $this->messagePreview($message);
+        $chat->last_message_at = $message->sent_at ?? now();
+
+        if ($incrementUnreadBy > 0) {
+            $chat->unread_count = max((int) $chat->unread_count, 0) + $incrementUnreadBy;
+        }
+
+        $chat->save();
+    }
+
+    private function messagePreview(ChatMessage $message): string
+    {
+        $text = trim((string) ($message->text ?? ''));
+
+        if ($text !== '') {
+            return Str::limit($text, 160, '...');
+        }
+
+        return match ($message->message_type) {
+            ChatMessage::TYPE_IMAGE => '[Image]',
+            ChatMessage::TYPE_VIDEO => '[Video]',
+            ChatMessage::TYPE_VOICE => '[Voice]',
+            ChatMessage::TYPE_AUDIO => '[Audio]',
+            ChatMessage::TYPE_LINK => '[Link]',
+            ChatMessage::TYPE_FILE => '[File]',
+            default => '[Message]',
+        };
+    }
+
+    private function extractAttachmentUrl(array $payload): ?string
+    {
+        $candidates = [
+            $payload['url'] ?? null,
+            $payload['attachment_url'] ?? null,
+            $payload['link'] ?? null,
+            $payload['href'] ?? null,
+        ];
+
+        foreach ($candidates as $candidate) {
+            if (! is_string($candidate)) {
+                continue;
+            }
+
+            $normalized = trim($candidate);
+
+            if ($normalized !== '') {
+                return $normalized;
+            }
+        }
+
+        return null;
+    }
+
+    private function extractFirstUrl(string $text): ?string
+    {
+        if (preg_match('/https?:\/\/[^\s]+/iu', $text, $matches) !== 1) {
+            return null;
+        }
+
+        $url = trim((string) ($matches[0] ?? ''));
+
+        return $url !== '' ? $url : null;
+    }
+
+    private function isOnlyUrl(string $text): bool
+    {
+        $normalized = trim($text);
+
+        if ($normalized === '') {
+            return false;
+        }
+
+        return filter_var($normalized, FILTER_VALIDATE_URL) !== false;
+    }
+
+    private function partMessageId(string $baseMessageId, string $suffix): string
+    {
+        if ($baseMessageId !== '') {
+            return $baseMessageId.':'.$suffix;
+        }
+
+        return 'ig-'.Str::uuid().':'.$suffix;
+    }
+
+    private function extractSenderId(array $event): ?string
+    {
+        $senderId = trim((string) ($event['sender']['id'] ?? ''));
+
+        return $senderId === '' ? null : $senderId;
+    }
+
+    private function extractRecipientId(array $event): ?string
+    {
+        $recipientId = trim((string) ($event['recipient']['id'] ?? ''));
+
+        return $recipientId === '' ? null : $recipientId;
+    }
+
+    private function isEchoEvent(array $event): bool
+    {
+        return (bool) ($event['message']['is_echo'] ?? false)
+            || (bool) ($event['is_echo'] ?? false);
+    }
+}

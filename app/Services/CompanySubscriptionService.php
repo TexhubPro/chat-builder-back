@@ -14,9 +14,9 @@ class CompanySubscriptionService
     {
         $company = Company::query()->where('user_id', $userId)->first();
 
-        if (!$company) {
+        if (! $company) {
             $baseName = trim($userName) !== '' ? trim($userName) : 'Company';
-            $companyName = Str::limit($baseName . ' Company', 160, '');
+            $companyName = Str::limit($baseName.' Company', 160, '');
             $slugBase = Str::slug($baseName);
 
             if ($slugBase === '') {
@@ -26,7 +26,7 @@ class CompanySubscriptionService
             $company = Company::query()->create([
                 'user_id' => $userId,
                 'name' => $companyName,
-                'slug' => Str::limit($slugBase . '-' . $userId, 191, ''),
+                'slug' => Str::limit($slugBase.'-'.$userId, 191, ''),
                 'status' => Company::STATUS_ACTIVE,
             ]);
         }
@@ -68,7 +68,7 @@ class CompanySubscriptionService
     {
         $subscription = $company->subscription()->with('plan')->first();
 
-        if (!$subscription) {
+        if (! $subscription) {
             $company->assistants()->where('is_active', true)->update(['is_active' => false]);
 
             return;
@@ -77,7 +77,7 @@ class CompanySubscriptionService
         $this->synchronizeBillingPeriods($subscription);
         $subscription->refresh()->load('plan');
 
-        if (!$subscription->isActiveAt()) {
+        if (! $subscription->isActiveAt()) {
             $company->assistants()->where('is_active', true)->update(['is_active' => false]);
 
             return;
@@ -91,21 +91,21 @@ class CompanySubscriptionService
             return;
         }
 
-        $allowedAssistantIds = $company->assistants()
+        $activeAssistantIds = $company->assistants()
+            ->where('is_active', true)
             ->orderBy('id')
-            ->limit($assistantLimit)
             ->pluck('id')
             ->all();
 
-        if ($allowedAssistantIds === []) {
+        if ($activeAssistantIds === []) {
             return;
         }
 
-        $company->assistants()
-            ->whereIn('id', $allowedAssistantIds)
-            ->where('is_active', false)
-            ->update(['is_active' => true]);
+        if (count($activeAssistantIds) <= $assistantLimit) {
+            return;
+        }
 
+        $allowedAssistantIds = array_slice($activeAssistantIds, 0, $assistantLimit);
         $company->assistants()
             ->whereNotIn('id', $allowedAssistantIds)
             ->where('is_active', true)
@@ -147,5 +147,27 @@ class CompanySubscriptionService
         }
 
         return $subscription;
+    }
+
+    public function incrementChatUsage(Company $company, int $count = 1): void
+    {
+        if ($count <= 0) {
+            return;
+        }
+
+        $subscription = $company->subscription()->with('plan')->first();
+
+        if (! $subscription) {
+            return;
+        }
+
+        $this->synchronizeBillingPeriods($subscription);
+        $subscription->refresh()->load('plan');
+
+        if (! $subscription->isActiveAt()) {
+            return;
+        }
+
+        $subscription->increment('chat_count_current_period', $count);
     }
 }

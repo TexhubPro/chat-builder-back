@@ -3,11 +3,16 @@
 use Illuminate\Support\Facades\Route;
 use TexHub\Meta\Http\Controllers\InstagramController;
 
-Route::middleware('web')->group(function (): void {
-    Route::get('/instagram-verify', [InstagramController::class, 'verifyPage'])->name('instagram.verify');
-    Route::match(['get', 'post'], '/instagram-main-webhook', [InstagramController::class, 'webhook'])
-        ->name('instagram.webhook');
-    Route::get('/callback', [InstagramController::class, 'callback'])
-        ->middleware('auth')
-        ->name('instagram.callback');
-});
+$webhookPath = '/'.ltrim((string) config('meta.instagram.webhook_path', '/instagram-main-webhook'), '/');
+$redirectPath = '/'.ltrim((string) config('meta.instagram.redirect_path', '/callback'), '/');
+
+Route::get('/instagram-verify', [InstagramController::class, 'verifyPage'])
+    ->middleware('web')
+    ->name('instagram.verify');
+
+Route::match(['get', 'post'], $webhookPath, [InstagramController::class, 'webhook'])
+    ->name('instagram.webhook');
+
+Route::get($redirectPath, [InstagramController::class, 'callback'])
+    ->middleware(['web', 'auth'])
+    ->name('instagram.callback');

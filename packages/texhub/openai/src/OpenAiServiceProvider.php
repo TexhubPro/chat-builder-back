@@ -10,9 +10,11 @@ class OpenAiServiceProvider extends ServiceProvider
     {
         $this->mergeConfigFrom(__DIR__ . '/../config/openai.php', 'openai');
 
-        $this->app->singleton('texhub.openai.assistant', function ($app) {
+        $this->app->singleton(Assistant::class, function ($app) {
             return new Assistant($app['config']->get('openai.assistant', []));
         });
+
+        $this->app->alias(Assistant::class, 'texhub.openai.assistant');
     }
 
     public function boot(): void

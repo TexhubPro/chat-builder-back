@@ -1,6 +1,9 @@
 <?php
 
+use App\Http\Controllers\Api\AssistantController;
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\ChatController;
+use App\Http\Controllers\Api\ChatMessageController;
 use App\Http\Controllers\Api\CompanySubscriptionController;
 use App\Http\Controllers\Api\InvoiceController;
 use App\Http\Controllers\Api\SubscriptionPlanController;
@@ -39,3 +42,33 @@ Route::prefix('billing')
 
 Route::post('/billing/alif/callback', [InvoiceController::class, 'alifCallback'])
     ->name('api.billing.alif.callback');
+
+Route::post('/chats/webhook/{channel}', [ChatController::class, 'webhook'])
+    ->name('api.chats.webhook');
+
+Route::prefix('assistants')
+    ->middleware([EnsureUserIsActive::class])
+    ->group(function (): void {
+        Route::get('/', [AssistantController::class, 'index']);
+        Route::post('/', [AssistantController::class, 'store']);
+        Route::put('/{assistantId}', [AssistantController::class, 'update'])->whereNumber('assistantId');
+        Route::post('/{assistantId}/start', [AssistantController::class, 'start'])->whereNumber('assistantId');
+        Route::post('/{assistantId}/stop', [AssistantController::class, 'stop'])->whereNumber('assistantId');
+        Route::delete('/{assistantId}', [AssistantController::class, 'destroy'])->whereNumber('assistantId');
+        Route::post('/{assistantId}/instruction-files', [AssistantController::class, 'uploadInstructionFiles'])
+            ->whereNumber('assistantId');
+        Route::delete('/{assistantId}/instruction-files/{fileId}', [AssistantController::class, 'destroyInstructionFile'])
+            ->whereNumber('assistantId')
+            ->whereNumber('fileId');
+    });
+
+Route::prefix('chats')
+    ->middleware([EnsureUserIsActive::class])
+    ->group(function (): void {
+        Route::get('/', [ChatController::class, 'index']);
+        Route::get('/{chatId}', [ChatController::class, 'show'])->whereNumber('chatId');
+        Route::post('/{chatId}/read', [ChatController::class, 'markAsRead'])->whereNumber('chatId');
+        Route::post('/{chatId}/messages', [ChatMessageController::class, 'store'])->whereNumber('chatId');
+        Route::post('/{chatId}/assistant-reply', [ChatMessageController::class, 'assistantReply'])
+            ->whereNumber('chatId');
+    });
