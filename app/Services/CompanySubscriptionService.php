@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\Company;
 use App\Models\CompanySubscription;
 use App\Models\SubscriptionPlan;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
 
 class CompanySubscriptionService
@@ -73,11 +74,8 @@ class CompanySubscriptionService
             return;
         }
 
-        if ($subscription->status === CompanySubscription::STATUS_ACTIVE && $subscription->isExpiredAt()) {
-            $subscription->forceFill([
-                'status' => CompanySubscription::STATUS_EXPIRED,
-            ])->save();
-        }
+        $this->synchronizeBillingPeriods($subscription);
+        $subscription->refresh()->load('plan');
 
         if (!$subscription->isActiveAt()) {
             $company->assistants()->where('is_active', true)->update(['is_active' => false]);
@@ -112,5 +110,42 @@ class CompanySubscriptionService
             ->whereNotIn('id', $allowedAssistantIds)
             ->where('is_active', true)
             ->update(['is_active' => false]);
+    }
+
+    public function synchronizeBillingPeriods(CompanySubscription $subscription): CompanySubscription
+    {
+        $now = Carbon::now();
+        $cycleDays = max((int) $subscription->billing_cycle_days, 1);
+        $updated = false;
+
+        if (
+            $subscription->status === CompanySubscription::STATUS_ACTIVE
+            && $subscription->chat_period_ends_at
+            && $subscription->chat_period_ends_at->lte($now)
+        ) {
+            $nextPeriodStart = $subscription->chat_period_ends_at->copy();
+            $nextPeriodEnd = $nextPeriodStart->copy()->addDays($cycleDays);
+
+            while ($nextPeriodEnd->lte($now)) {
+                $nextPeriodStart = $nextPeriodEnd;
+                $nextPeriodEnd = $nextPeriodStart->copy()->addDays($cycleDays);
+            }
+
+            $subscription->chat_count_current_period = 0;
+            $subscription->chat_period_started_at = $nextPeriodStart;
+            $subscription->chat_period_ends_at = $nextPeriodEnd;
+            $updated = true;
+        }
+
+        if ($subscription->status === CompanySubscription::STATUS_ACTIVE && $subscription->isExpiredAt()) {
+            $subscription->status = CompanySubscription::STATUS_EXPIRED;
+            $updated = true;
+        }
+
+        if ($updated) {
+            $subscription->save();
+        }
+
+        return $subscription;
     }
 }

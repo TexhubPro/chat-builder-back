@@ -8,11 +8,11 @@ use App\Models\CompanySubscription;
 use App\Models\Invoice;
 use App\Models\SubscriptionPlan;
 use App\Models\User;
+use App\Services\BillingInvoiceService;
 use App\Services\CompanySubscriptionService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Str;
 
 class CompanySubscriptionController extends Controller
 {
@@ -30,6 +30,7 @@ class CompanySubscriptionController extends Controller
             ]);
         }
 
+        $this->subscriptionService()->synchronizeBillingPeriods($subscription);
         $this->subscriptionService()->syncAssistantAccess($company);
         $subscription->refresh();
         $subscription->load('plan');
@@ -72,39 +73,52 @@ class CompanySubscriptionController extends Controller
         $result = DB::transaction(function () use ($company, $user, $plan, $quantity): array {
             /** @var CompanySubscription $subscription */
             $subscription = $company->subscription()->with('plan')->firstOrNew();
+            $this->subscriptionService()->synchronizeBillingPeriods($subscription);
+            $subscription->loadMissing('plan');
 
             $wasActive = $subscription->exists && $subscription->isActiveAt();
-            $status = $wasActive ? CompanySubscription::STATUS_ACTIVE : CompanySubscription::STATUS_PENDING_PAYMENT;
             $cycleDays = max((int) $plan->billing_period_days, 1);
-            $subtotal = $this->multiplyPrice((string) $plan->price, $quantity);
+            $totals = $this->billingInvoiceService()->calculatePlanChangeTotals(
+                $wasActive ? $subscription : null,
+                $plan,
+                $quantity,
+            );
+
+            $metadata = is_array($subscription->metadata) ? $subscription->metadata : [];
+            $metadata['checkout_source'] = 'frontend';
+            $metadata['pending_plan_id'] = $plan->id;
+            $metadata['pending_plan_code'] = $plan->code;
+            $metadata['pending_quantity'] = $quantity;
 
             $subscription->forceFill([
                 'user_id' => $user->id,
-                'subscription_plan_id' => $plan->id,
-                'status' => $status,
-                'quantity' => $quantity,
+                'status' => $wasActive ? CompanySubscription::STATUS_ACTIVE : CompanySubscription::STATUS_PENDING_PAYMENT,
                 'billing_cycle_days' => $cycleDays,
-                'renewal_due_at' => now()->addDays($cycleDays),
-                'metadata' => [
-                    'checkout_source' => 'frontend',
-                ],
+                'metadata' => $metadata,
             ])->save();
+
+            if (!$wasActive) {
+                $subscription->forceFill([
+                    'subscription_plan_id' => $plan->id,
+                    'quantity' => $quantity,
+                    'renewal_due_at' => now()->addDays($cycleDays),
+                ])->save();
+            }
 
             $startsAt = now();
             $endsAt = $startsAt->copy()->addDays($cycleDays);
-
-            $includedChats = $subscription->fresh()->resolvedIncludedChats();
+            $includedChats = max((int) $plan->included_chats * max($quantity, 1), 0);
             $invoice = Invoice::query()->create([
                 'company_id' => $company->id,
                 'user_id' => $user->id,
                 'company_subscription_id' => $subscription->id,
                 'subscription_plan_id' => $plan->id,
-                'number' => $this->generateInvoiceNumber(),
+                'number' => $this->billingInvoiceService()->generateInvoiceNumber(),
                 'status' => Invoice::STATUS_ISSUED,
                 'currency' => (string) $plan->currency,
-                'subtotal' => $subtotal,
-                'overage_amount' => '0.00',
-                'total' => $subtotal,
+                'subtotal' => $totals['subtotal'],
+                'overage_amount' => $totals['overage_amount'],
+                'total' => $totals['total'],
                 'amount_paid' => '0.00',
                 'chat_included' => $includedChats,
                 'chat_used' => 0,
@@ -114,7 +128,14 @@ class CompanySubscriptionController extends Controller
                 'period_ended_at' => $endsAt,
                 'issued_at' => now(),
                 'due_at' => now()->addDay(),
-                'notes' => 'Auto-generated invoice for subscription checkout.',
+                'notes' => 'Auto-generated invoice for subscription checkout or plan update.',
+                'metadata' => [
+                    'purpose' => 'plan_change',
+                    'quantity' => $quantity,
+                    'credit_amount' => $totals['credit_amount'],
+                    'current_plan_code' => $subscription->plan?->code,
+                    'target_plan_code' => $plan->code,
+                ],
             ]);
 
             $this->subscriptionService()->syncAssistantAccess($company);
@@ -169,19 +190,8 @@ class CompanySubscriptionController extends Controller
         return app(CompanySubscriptionService::class);
     }
 
-    private function multiplyPrice(string $price, int $quantity): string
+    private function billingInvoiceService(): BillingInvoiceService
     {
-        $value = (float) $price * max($quantity, 0);
-
-        return number_format($value, 2, '.', '');
-    }
-
-    private function generateInvoiceNumber(): string
-    {
-        do {
-            $number = 'INV-' . now()->format('Ymd') . '-' . Str::upper(Str::random(8));
-        } while (Invoice::query()->where('number', $number)->exists());
-
-        return $number;
+        return app(BillingInvoiceService::class);
     }
 }
