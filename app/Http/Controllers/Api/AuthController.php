@@ -8,6 +8,7 @@ use App\Mail\TemporaryPasswordMail;
 use App\Models\EmailVerificationCode;
 use App\Models\SocialAccount;
 use App\Models\User;
+use App\Services\CompanySubscriptionService;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -100,6 +101,7 @@ class AuthController extends Controller
                 'status' => !$this->moderationEnabled(),
             ]);
 
+            $this->subscriptionService()->provisionDefaultWorkspaceForUser($user->id, $user->name);
             $this->issueAndSendVerificationCode($user, false);
 
             return $user;
@@ -210,6 +212,7 @@ class AuthController extends Controller
 
         $token = $this->issueFrontendToken($user, $validated['device_name'] ?? 'frontend');
         RateLimiter::clear($verifyThrottleKey);
+        $this->syncCompanyAssistantAccess($user);
 
         if ($this->isModerationManagedUser($user)) {
             return response()->json([
@@ -334,6 +337,7 @@ class AuthController extends Controller
                 RateLimiter::clear($throttleKey);
                 $user->tokens()->delete();
                 $token = $this->issueFrontendToken($user, $validated['device_name'] ?? 'frontend');
+                $this->syncCompanyAssistantAccess($user);
 
                 return response()->json([
                     'message' => 'Account is under moderation.',
@@ -357,6 +361,7 @@ class AuthController extends Controller
 
         $user->tokens()->delete();
         $token = $this->issueFrontendToken($user, $validated['device_name'] ?? 'frontend');
+        $this->syncCompanyAssistantAccess($user);
 
         return response()->json([
             'message' => 'Login successful.',
@@ -476,6 +481,7 @@ class AuthController extends Controller
 
         $user->tokens()->delete();
         $token = $this->issueFrontendToken($user, "{$provider}-oauth");
+        $this->syncCompanyAssistantAccess($user);
 
         return response()->json([
             'message' => 'Social login successful.',
@@ -934,6 +940,8 @@ class AuthController extends Controller
                     $user->forceFill($updates)->save();
                 }
 
+                $this->subscriptionService()->provisionDefaultWorkspaceForUser($user->id, $user->name);
+
                 return $user;
             }
 
@@ -967,6 +975,8 @@ class AuthController extends Controller
                 }
             }
 
+            $this->subscriptionService()->provisionDefaultWorkspaceForUser($user->id, $user->name);
+
             SocialAccount::query()->create([
                 'user_id' => $user->id,
                 'provider' => $provider,
@@ -977,5 +987,21 @@ class AuthController extends Controller
 
             return $user;
         });
+    }
+
+    private function syncCompanyAssistantAccess(User $user): void
+    {
+        $company = $user->company;
+
+        if (!$company) {
+            return;
+        }
+
+        $this->subscriptionService()->syncAssistantAccess($company);
+    }
+
+    private function subscriptionService(): CompanySubscriptionService
+    {
+        return app(CompanySubscriptionService::class);
     }
 }

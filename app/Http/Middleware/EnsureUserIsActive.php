@@ -3,6 +3,7 @@
 namespace App\Http\Middleware;
 
 use App\Models\User;
+use App\Services\CompanySubscriptionService;
 use Closure;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Http\JsonResponse;
@@ -74,6 +75,11 @@ class EnsureUserIsActive
         $authenticatedUser = $user->withAccessToken($accessToken);
         Auth::setUser($authenticatedUser);
         $request->setUserResolver(static fn () => $authenticatedUser);
+
+        $company = $authenticatedUser->company;
+        if ($company) {
+            app(CompanySubscriptionService::class)->syncAssistantAccess($company);
+        }
 
         $accessToken->forceFill(['last_used_at' => now()])->save();
 
