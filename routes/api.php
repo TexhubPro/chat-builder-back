@@ -1,12 +1,15 @@
 <?php
 
 use App\Http\Controllers\Api\AssistantController;
+use App\Http\Controllers\Api\AssistantChannelController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\ChatController;
 use App\Http\Controllers\Api\ChatMessageController;
 use App\Http\Controllers\Api\CompanySubscriptionController;
+use App\Http\Controllers\Api\InstagramIntegrationController;
 use App\Http\Controllers\Api\InvoiceController;
 use App\Http\Controllers\Api\SubscriptionPlanController;
+use App\Http\Controllers\Api\TelegramIntegrationController;
 use App\Http\Middleware\EnsureApiTokenIsValid;
 use App\Http\Middleware\EnsureUserIsActive;
 use Illuminate\Support\Facades\Route;
@@ -43,6 +46,13 @@ Route::prefix('billing')
 Route::post('/billing/alif/callback', [InvoiceController::class, 'alifCallback'])
     ->name('api.billing.alif.callback');
 
+Route::get('/integrations/instagram/callback', [InstagramIntegrationController::class, 'callback'])
+    ->name('api.integrations.instagram.callback');
+
+Route::post('/integrations/telegram/webhook/{assistantChannelId}', [TelegramIntegrationController::class, 'webhook'])
+    ->whereNumber('assistantChannelId')
+    ->name('api.integrations.telegram.webhook');
+
 Route::post('/chats/webhook/{channel}', [ChatController::class, 'webhook'])
     ->name('api.chats.webhook');
 
@@ -60,6 +70,20 @@ Route::prefix('assistants')
         Route::delete('/{assistantId}/instruction-files/{fileId}', [AssistantController::class, 'destroyInstructionFile'])
             ->whereNumber('assistantId')
             ->whereNumber('fileId');
+    });
+
+Route::prefix('assistant-channels')
+    ->middleware([EnsureUserIsActive::class])
+    ->group(function (): void {
+        Route::get('/', [AssistantChannelController::class, 'index']);
+        Route::post('/{assistantId}/instagram/connect', [InstagramIntegrationController::class, 'redirect'])
+            ->whereNumber('assistantId');
+        Route::post('/{assistantId}/telegram/connect', [TelegramIntegrationController::class, 'connect'])
+            ->whereNumber('assistantId');
+        Route::patch('/{assistantId}/{channel}', [AssistantChannelController::class, 'update'])
+            ->whereNumber('assistantId');
+        Route::delete('/{assistantId}/{channel}', [AssistantChannelController::class, 'destroy'])
+            ->whereNumber('assistantId');
     });
 
 Route::prefix('chats')

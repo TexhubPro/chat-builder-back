@@ -203,12 +203,18 @@ class InstagramController extends Controller
     private function exchangeForLongLivedToken(string $accessToken): ?array
     {
         $graphBase = rtrim((string) config('meta.instagram.graph_base', 'https://graph.instagram.com'), '/');
+        $query = [
+            'grant_type' => 'ig_exchange_token',
+            'access_token' => $accessToken,
+        ];
+
+        $appSecret = trim((string) config('meta.instagram.app_secret', ''));
+        if ($appSecret !== '') {
+            $query['client_secret'] = $appSecret;
+        }
 
         try {
-            $response = Http::get($graphBase . '/access_token', [
-                'grant_type' => 'ig_exchange_token',
-                'access_token' => $accessToken,
-            ]);
+            $response = Http::get($graphBase . '/access_token', $query);
 
             if (! $response->successful()) {
                 $this->logError('Instagram long-lived token exchange failed', [
@@ -241,13 +247,14 @@ class InstagramController extends Controller
 
     private function handleWebhook(array $payload): void
     {
-        if (empty($payload['entry']) || ! is_array($payload['entry'])) {
+        $entries = $this->normalizeWebhookEntries($payload);
+        if ($entries === []) {
             return;
         }
 
         $mainWebhookService = app(InstagramMainWebhookService::class);
 
-        foreach ($payload['entry'] as $entry) {
+        foreach ($entries as $entry) {
             if (! is_array($entry)) {
                 continue;
             }
@@ -262,10 +269,10 @@ class InstagramController extends Controller
                     continue;
                 }
 
-                $senderId = $event['sender']['id'] ?? null;
-                $recipientId = $event['recipient']['id'] ?? null;
+                $senderId = trim((string) ($event['sender']['id'] ?? ''));
+                $recipientId = trim((string) ($event['recipient']['id'] ?? ''));
 
-                if (! is_string($senderId) || $senderId === '' || ! is_string($recipientId) || $recipientId === '') {
+                if ($senderId === '' || $recipientId === '') {
                     continue;
                 }
 
@@ -286,7 +293,7 @@ class InstagramController extends Controller
                 ]);
 
                 $timestamp = $event['timestamp'] ?? null;
-                $sentAt = is_numeric($timestamp) ? now()->setTimestamp((int) ($timestamp / 1000)) : null;
+                $sentAt = $this->resolveEventTimestamp($timestamp);
 
                 $this->storeEventMessage($chat->id, $senderId, $recipientId, $event, $sentAt);
 
@@ -299,6 +306,45 @@ class InstagramController extends Controller
                 }
             }
         }
+    }
+
+    private function normalizeWebhookEntries(array $payload): array
+    {
+        if (! empty($payload['entry']) && is_array($payload['entry'])) {
+            return $payload['entry'];
+        }
+
+        $field = trim((string) ($payload['field'] ?? ''));
+        $value = $payload['value'] ?? null;
+
+        if ($field !== '' && is_array($value)) {
+            return [[
+                'id' => (string) ($payload['id'] ?? $value['recipient']['id'] ?? '0'),
+                'changes' => [[
+                    'field' => $field,
+                    'value' => $value,
+                ]],
+            ]];
+        }
+
+        if (! empty($payload['sender']) && ! empty($payload['recipient'])) {
+            return [[
+                'id' => (string) ($payload['recipient']['id'] ?? '0'),
+                'messaging' => [$payload],
+            ]];
+        }
+
+        if (is_array($value) && ! empty($value['sender']) && ! empty($value['recipient'])) {
+            return [[
+                'id' => (string) ($value['recipient']['id'] ?? '0'),
+                'changes' => [[
+                    'field' => $field !== '' ? $field : 'messages',
+                    'value' => $value,
+                ]],
+            ]];
+        }
+
+        return [];
     }
 
     private function extractMessagingEvents(array $entry): array
@@ -467,6 +513,22 @@ class InstagramController extends Controller
         }
 
         return null;
+    }
+
+    private function resolveEventTimestamp(mixed $timestamp): ?\Illuminate\Support\Carbon
+    {
+        if (! is_numeric($timestamp)) {
+            return null;
+        }
+
+        $normalized = (string) $timestamp;
+        $digitsOnly = preg_replace('/\D+/', '', $normalized) ?? '';
+
+        if ($digitsOnly !== '' && strlen($digitsOnly) <= 10) {
+            return now()->setTimestamp((int) $timestamp);
+        }
+
+        return now()->setTimestamp((int) floor(((float) $timestamp) / 1000));
     }
 
     private function storeWebhookPayload(array $payload): void

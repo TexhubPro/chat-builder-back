@@ -47,4 +47,11 @@ return [
         'redirect' => env('GOOGLE_REDIRECT_URI', rtrim((string) env('APP_URL'), '/').'/api/auth/oauth/google/callback'),
     ],
 
+    'telegram' => [
+        'bot_api_base' => env('TELEGRAM_BOT_API_BASE', 'https://api.telegram.org'),
+        'webhook_url' => env('TELEGRAM_WEBHOOK_URL'),
+        'webhook_secret_header' => env('TELEGRAM_WEBHOOK_SECRET_HEADER', 'X-Telegram-Bot-Api-Secret-Token'),
+        'auto_reply_enabled' => filter_var(env('TELEGRAM_AUTO_REPLY_ENABLED', true), FILTER_VALIDATE_BOOL),
+    ],
+
 ];

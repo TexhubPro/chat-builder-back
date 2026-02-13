@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Api\InstagramIntegrationController;
 use Illuminate\Support\Facades\Route;
 use TexHub\Meta\Http\Controllers\InstagramController;
 
@@ -13,6 +14,12 @@ Route::get('/instagram-verify', [InstagramController::class, 'verifyPage'])
 Route::match(['get', 'post'], $webhookPath, [InstagramController::class, 'webhook'])
     ->name('instagram.webhook');
 
-Route::get($redirectPath, [InstagramController::class, 'callback'])
-    ->middleware(['web', 'auth'])
+if ($redirectPath !== '/callback') {
+    Route::get($redirectPath, [InstagramController::class, 'callback'])
+        ->middleware(['web'])
+        ->name('instagram.callback');
+}
+
+Route::get('/callback', [InstagramIntegrationController::class, 'callback'])
+    ->middleware(['web'])
     ->name('instagram.callback');

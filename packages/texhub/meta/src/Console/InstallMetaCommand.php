@@ -53,8 +53,9 @@ class InstallMetaCommand extends Command
             'META_INSTAGRAM_WEBHOOK_PATH' => '/instagram-main-webhook',
             'META_INSTAGRAM_SCOPES' => 'instagram_basic,instagram_manage_messages,pages_show_list,pages_messaging',
             'META_INSTAGRAM_GRAPH_BASE' => 'https://graph.instagram.com',
-            'META_INSTAGRAM_API_VERSION' => 'v20.0',
+            'META_INSTAGRAM_API_VERSION' => 'v23.0',
             'META_INSTAGRAM_AUTH_URL' => '',
+            'META_INSTAGRAM_TOKEN_REFRESH_GRACE_SECONDS' => '900',
             'META_INSTAGRAM_AUTO_REPLY_ENABLED' => 'true',
             'META_INSTAGRAM_VOICE_REPLY_FOR_AUDIO' => 'true',
         ];

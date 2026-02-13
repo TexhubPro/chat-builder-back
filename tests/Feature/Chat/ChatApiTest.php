@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\Assistant;
+use App\Models\AssistantChannel;
 use App\Models\Chat;
 use App\Models\ChatMessage;
 use App\Models\Company;
@@ -13,8 +14,11 @@ use App\Models\SubscriptionPlan;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 use Mockery\MockInterface;
+use TexHub\Meta\Facades\Instagram as InstagramFacade;
+use TexHub\Meta\Models\InstagramIntegration;
 use TexHub\OpenAi\Assistant as OpenAiAssistantClient;
 
 uses(RefreshDatabase::class);
@@ -67,6 +71,134 @@ function chatApiContext(bool $activeSubscription = true): array
     $token = $user->createToken('frontend')->plainTextToken;
 
     return [$user, $company, $token];
+}
+
+function createInstagramChatForApi(
+    User $user,
+    Company $company,
+    string $suffix = '1',
+    array $integrationOverrides = [],
+    array $chatOverrides = [],
+): array {
+    $assistant = Assistant::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'name' => 'Instagram Assistant '.$suffix,
+        'is_active' => true,
+    ]);
+
+    $receiverId = (string) ($integrationOverrides['receiver_id'] ?? ('1789000000'.$suffix));
+    $accessToken = (string) ($integrationOverrides['access_token'] ?? ('instagram-token-'.$suffix));
+    $instagramUserId = (string) ($integrationOverrides['instagram_user_id'] ?? ('ig-business-'.$suffix));
+
+    $integration = InstagramIntegration::query()->create(array_merge([
+        'user_id' => $user->id,
+        'instagram_user_id' => $instagramUserId,
+        'username' => 'ig-company-'.$suffix,
+        'receiver_id' => $receiverId,
+        'access_token' => $accessToken,
+        'token_expires_at' => now()->addDays(30),
+        'is_active' => true,
+    ], $integrationOverrides));
+
+    $assistantChannel = AssistantChannel::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'assistant_id' => $assistant->id,
+        'channel' => AssistantChannel::CHANNEL_INSTAGRAM,
+        'name' => 'Instagram Channel '.$suffix,
+        'external_account_id' => (string) ($integration->receiver_id ?? $receiverId),
+        'is_active' => true,
+        'credentials' => [
+            'provider' => 'instagram',
+            'access_token' => (string) $integration->access_token,
+            'token_expires_at' => $integration->token_expires_at?->toIso8601String(),
+            'instagram_user_id' => (string) $integration->instagram_user_id,
+            'receiver_id' => (string) ($integration->receiver_id ?? ''),
+        ],
+    ]);
+
+    $customerId = (string) ($chatOverrides['channel_user_id'] ?? ('customer-'.$suffix));
+    $channelChatId = (string) ($chatOverrides['channel_chat_id'] ?? ($receiverId.':'.$customerId));
+    $chatMetadata = array_merge([
+        'instagram' => [
+            'integration_id' => $integration->id,
+            'instagram_user_id' => (string) $integration->instagram_user_id,
+            'receiver_id' => (string) ($integration->receiver_id ?? ''),
+        ],
+    ], is_array($chatOverrides['metadata'] ?? null) ? $chatOverrides['metadata'] : []);
+
+    $chat = Chat::query()->create(array_merge([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'assistant_id' => $assistant->id,
+        'assistant_channel_id' => $assistantChannel->id,
+        'channel' => 'instagram',
+        'channel_chat_id' => $channelChatId,
+        'channel_user_id' => $customerId,
+        'name' => 'Instagram Customer '.$suffix,
+        'status' => Chat::STATUS_OPEN,
+        'metadata' => $chatMetadata,
+    ], $chatOverrides));
+
+    return [$assistant, $assistantChannel, $integration, $chat];
+}
+
+function createTelegramChatForApi(
+    User $user,
+    Company $company,
+    string $suffix = '1',
+    array $channelOverrides = [],
+    array $chatOverrides = [],
+): array {
+    $assistant = Assistant::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'name' => 'Telegram Assistant '.$suffix,
+        'is_active' => true,
+    ]);
+
+    $botId = (string) ($channelOverrides['external_account_id'] ?? ('99887766'.$suffix));
+    $botToken = (string) ($channelOverrides['credentials']['bot_token'] ?? ('telegram-token-'.$suffix));
+
+    $assistantChannel = AssistantChannel::query()->create(array_merge([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'assistant_id' => $assistant->id,
+        'channel' => AssistantChannel::CHANNEL_TELEGRAM,
+        'name' => 'Telegram Channel '.$suffix,
+        'external_account_id' => $botId,
+        'is_active' => true,
+        'credentials' => [
+            'provider' => 'telegram',
+            'bot_token' => $botToken,
+            'bot_id' => $botId,
+            'bot_username' => 'support_bot_'.$suffix,
+        ],
+    ], $channelOverrides));
+
+    $chatId = (string) ($chatOverrides['channel_chat_id'] ?? ('5000'.$suffix));
+    $channelUserId = (string) ($chatOverrides['channel_user_id'] ?? ('3000'.$suffix));
+
+    $chat = Chat::query()->create(array_merge([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'assistant_id' => $assistant->id,
+        'assistant_channel_id' => $assistantChannel->id,
+        'channel' => AssistantChannel::CHANNEL_TELEGRAM,
+        'channel_chat_id' => $chatId,
+        'channel_user_id' => $channelUserId,
+        'name' => 'Telegram Customer '.$suffix,
+        'status' => Chat::STATUS_OPEN,
+        'metadata' => [
+            'telegram' => [
+                'assistant_channel_id' => $assistantChannel->id,
+                'chat_id' => $chatId,
+            ],
+        ],
+    ], $chatOverrides));
+
+    return [$assistant, $assistantChannel, $chat];
 }
 
 test('chat api lists chats and applies channel and assistant filters', function () {
@@ -203,6 +335,332 @@ test('chat api returns chat details marks as read and sends message', function (
         'text' => 'Operator reply',
         'sender_type' => 'agent',
     ]);
+});
+
+test('chat api delivers outbound instagram text message through integration', function () {
+    [$user, $company, $token] = chatApiContext();
+
+    [, , $integration, $chat] = createInstagramChatForApi($user, $company, '101', [
+        'receiver_id' => '178900000101',
+        'access_token' => 'ig-token-text-101',
+    ], [
+        'channel_user_id' => 'customer-101',
+    ]);
+
+    InstagramFacade::shouldReceive('sendTextMessage')
+        ->once()
+        ->with(
+            '178900000101',
+            'customer-101',
+            'Operator message to Instagram',
+            'ig-token-text-101',
+            false
+        )
+        ->andReturn('ig_out_text_101');
+
+    $this
+        ->withHeader('Authorization', "Bearer {$token}")
+        ->postJson('/api/chats/'.$chat->id.'/messages', [
+            'text' => 'Operator message to Instagram',
+            'sender_type' => ChatMessage::SENDER_AGENT,
+            'direction' => ChatMessage::DIRECTION_OUTBOUND,
+            'message_type' => ChatMessage::TYPE_TEXT,
+        ])
+        ->assertCreated()
+        ->assertJsonPath('chat_message.channel_message_id', 'ig_out_text_101')
+        ->assertJsonPath('chat_message.message_type', ChatMessage::TYPE_TEXT);
+
+    $this->assertDatabaseHas('chat_messages', [
+        'chat_id' => $chat->id,
+        'channel_message_id' => 'ig_out_text_101',
+        'text' => 'Operator message to Instagram',
+        'direction' => ChatMessage::DIRECTION_OUTBOUND,
+    ]);
+
+    $this->assertDatabaseHas('instagram_integrations', [
+        'id' => $integration->id,
+        'access_token' => 'ig-token-text-101',
+    ]);
+});
+
+test('chat api delivers outbound instagram media message through integration', function () {
+    [$user, $company, $token] = chatApiContext();
+    Storage::fake('public');
+
+    [, , , $chat] = createInstagramChatForApi($user, $company, '102', [
+        'receiver_id' => '178900000102',
+        'access_token' => 'ig-token-media-102',
+    ], [
+        'channel_user_id' => 'customer-102',
+    ]);
+
+    InstagramFacade::shouldReceive('sendMediaMessage')
+        ->once()
+        ->with(
+            '178900000102',
+            'customer-102',
+            'image',
+            \Mockery::on(static fn (mixed $url): bool => is_string($url) && str_contains($url, '/storage/chat-files/')),
+            false,
+            'ig-token-media-102',
+            false
+        )
+        ->andReturn('ig_out_media_102');
+
+    $file = UploadedFile::fake()->image('photo.jpg', 1000, 800)->size(900);
+
+    $this
+        ->withHeader('Authorization', "Bearer {$token}")
+        ->post('/api/chats/'.$chat->id.'/messages', [
+            'file' => $file,
+            'sender_type' => ChatMessage::SENDER_AGENT,
+            'direction' => ChatMessage::DIRECTION_OUTBOUND,
+        ])
+        ->assertCreated()
+        ->assertJsonPath('chat_message.channel_message_id', 'ig_out_media_102')
+        ->assertJsonPath('chat_message.message_type', ChatMessage::TYPE_IMAGE);
+
+    $this->assertDatabaseHas('chat_messages', [
+        'chat_id' => $chat->id,
+        'channel_message_id' => 'ig_out_media_102',
+        'message_type' => ChatMessage::TYPE_IMAGE,
+        'direction' => ChatMessage::DIRECTION_OUTBOUND,
+    ]);
+});
+
+test('chat api delivers outbound telegram text message through integration', function () {
+    [$user, $company, $token] = chatApiContext();
+
+    [, , $chat] = createTelegramChatForApi($user, $company, '201', [
+        'credentials' => [
+            'provider' => 'telegram',
+            'bot_token' => 'telegram-token-201',
+            'bot_id' => '99887766201',
+            'bot_username' => 'support_bot_201',
+        ],
+    ], [
+        'channel_chat_id' => '5201',
+    ]);
+
+    config()->set('services.telegram.bot_api_base', 'https://api.telegram.org');
+
+    Http::fake([
+        'https://api.telegram.org/bottelegram-token-201/sendMessage' => Http::response([
+            'ok' => true,
+            'result' => [
+                'message_id' => 7771,
+            ],
+        ], 200),
+    ]);
+
+    $this
+        ->withHeader('Authorization', "Bearer {$token}")
+        ->postJson('/api/chats/'.$chat->id.'/messages', [
+            'text' => 'Telegram operator text',
+            'sender_type' => ChatMessage::SENDER_AGENT,
+            'direction' => ChatMessage::DIRECTION_OUTBOUND,
+            'message_type' => ChatMessage::TYPE_TEXT,
+        ])
+        ->assertCreated()
+        ->assertJsonPath('chat_message.channel_message_id', '7771')
+        ->assertJsonPath('chat_message.message_type', ChatMessage::TYPE_TEXT);
+
+    $this->assertDatabaseHas('chat_messages', [
+        'chat_id' => $chat->id,
+        'channel_message_id' => '7771',
+        'text' => 'Telegram operator text',
+        'direction' => ChatMessage::DIRECTION_OUTBOUND,
+    ]);
+
+    Http::assertSent(function (\Illuminate\Http\Client\Request $request): bool {
+        if ($request->url() !== 'https://api.telegram.org/bottelegram-token-201/sendMessage') {
+            return false;
+        }
+
+        $data = $request->data();
+
+        return (string) ($data['chat_id'] ?? '') === '5201'
+            && (string) ($data['text'] ?? '') === 'Telegram operator text';
+    });
+});
+
+test('chat api delivers outbound telegram media message through integration', function () {
+    [$user, $company, $token] = chatApiContext();
+    Storage::fake('public');
+
+    [, , $chat] = createTelegramChatForApi($user, $company, '202', [
+        'credentials' => [
+            'provider' => 'telegram',
+            'bot_token' => 'telegram-token-202',
+            'bot_id' => '99887766202',
+            'bot_username' => 'support_bot_202',
+        ],
+    ], [
+        'channel_chat_id' => '5202',
+    ]);
+
+    config()->set('services.telegram.bot_api_base', 'https://api.telegram.org');
+
+    Http::fake([
+        'https://api.telegram.org/bottelegram-token-202/sendPhoto' => Http::response([
+            'ok' => true,
+            'result' => [
+                'message_id' => 7772,
+            ],
+        ], 200),
+    ]);
+
+    $file = UploadedFile::fake()->image('telegram-photo.jpg', 1200, 900)->size(900);
+
+    $this
+        ->withHeader('Authorization', "Bearer {$token}")
+        ->post('/api/chats/'.$chat->id.'/messages', [
+            'file' => $file,
+            'sender_type' => ChatMessage::SENDER_AGENT,
+            'direction' => ChatMessage::DIRECTION_OUTBOUND,
+        ])
+        ->assertCreated()
+        ->assertJsonPath('chat_message.channel_message_id', '7772')
+        ->assertJsonPath('chat_message.message_type', ChatMessage::TYPE_IMAGE);
+
+    $this->assertDatabaseHas('chat_messages', [
+        'chat_id' => $chat->id,
+        'channel_message_id' => '7772',
+        'message_type' => ChatMessage::TYPE_IMAGE,
+        'direction' => ChatMessage::DIRECTION_OUTBOUND,
+    ]);
+
+    Http::assertSent(function (\Illuminate\Http\Client\Request $request): bool {
+        if ($request->url() !== 'https://api.telegram.org/bottelegram-token-202/sendPhoto') {
+            return false;
+        }
+
+        $data = $request->data();
+
+        return (string) ($data['chat_id'] ?? '') === '5202'
+            && is_string($data['photo'] ?? null)
+            && str_contains((string) $data['photo'], '/storage/chat-files/');
+    });
+});
+
+test('chat api refreshes expired instagram token before outbound send', function () {
+    [$user, $company, $token] = chatApiContext();
+
+    [, , $integration, $chat] = createInstagramChatForApi($user, $company, '103', [
+        'receiver_id' => '178900000103',
+        'access_token' => 'expired_token_103',
+        'token_expires_at' => now()->subMinutes(2),
+    ], [
+        'channel_user_id' => 'customer-103',
+    ]);
+
+    config()->set('meta.instagram.graph_base', 'https://graph.instagram.com');
+    config()->set('meta.instagram.token_refresh_grace_seconds', 60);
+
+    Http::fake([
+        'https://graph.instagram.com/refresh_access_token*' => Http::response([
+            'access_token' => 'fresh_token_103',
+            'token_type' => 'bearer',
+            'expires_in' => 5184000,
+        ], 200),
+    ]);
+
+    InstagramFacade::shouldReceive('sendTextMessage')
+        ->once()
+        ->with(
+            '178900000103',
+            'customer-103',
+            'Need token refresh',
+            'fresh_token_103',
+            false
+        )
+        ->andReturn('ig_out_text_103');
+
+    $this
+        ->withHeader('Authorization', "Bearer {$token}")
+        ->postJson('/api/chats/'.$chat->id.'/messages', [
+            'text' => 'Need token refresh',
+            'sender_type' => ChatMessage::SENDER_AGENT,
+            'direction' => ChatMessage::DIRECTION_OUTBOUND,
+            'message_type' => ChatMessage::TYPE_TEXT,
+        ])
+        ->assertCreated()
+        ->assertJsonPath('chat_message.channel_message_id', 'ig_out_text_103');
+
+    Http::assertSent(function ($request): bool {
+        if (! str_starts_with($request->url(), 'https://graph.instagram.com/refresh_access_token')) {
+            return false;
+        }
+
+        parse_str((string) parse_url($request->url(), PHP_URL_QUERY), $query);
+
+        return (string) ($query['grant_type'] ?? '') === 'ig_refresh_token'
+            && (string) ($query['access_token'] ?? '') === 'expired_token_103';
+    });
+
+    $integration->refresh();
+    expect((string) $integration->access_token)->toBe('fresh_token_103');
+    expect($integration->token_expires_at)->not->toBeNull();
+});
+
+test('chat api refreshes instagram token when token_expires_at is null', function () {
+    [$user, $company, $token] = chatApiContext();
+
+    [, , $integration, $chat] = createInstagramChatForApi($user, $company, '104', [
+        'receiver_id' => '178900000104',
+        'access_token' => 'legacy_token_104',
+        'token_expires_at' => null,
+    ], [
+        'channel_user_id' => 'customer-104',
+    ]);
+
+    config()->set('meta.instagram.graph_base', 'https://graph.instagram.com');
+    config()->set('meta.instagram.token_refresh_grace_seconds', 60);
+
+    Http::fake([
+        'https://graph.instagram.com/refresh_access_token*' => Http::response([
+            'access_token' => 'fresh_token_104',
+            'token_type' => 'bearer',
+            'expires_in' => 5184000,
+        ], 200),
+    ]);
+
+    InstagramFacade::shouldReceive('sendTextMessage')
+        ->once()
+        ->with(
+            '178900000104',
+            'customer-104',
+            'Need refresh from null expires',
+            'fresh_token_104',
+            false
+        )
+        ->andReturn('ig_out_text_104');
+
+    $this
+        ->withHeader('Authorization', "Bearer {$token}")
+        ->postJson('/api/chats/'.$chat->id.'/messages', [
+            'text' => 'Need refresh from null expires',
+            'sender_type' => ChatMessage::SENDER_AGENT,
+            'direction' => ChatMessage::DIRECTION_OUTBOUND,
+            'message_type' => ChatMessage::TYPE_TEXT,
+        ])
+        ->assertCreated()
+        ->assertJsonPath('chat_message.channel_message_id', 'ig_out_text_104');
+
+    Http::assertSent(function ($request): bool {
+        if (! str_starts_with($request->url(), 'https://graph.instagram.com/refresh_access_token')) {
+            return false;
+        }
+
+        parse_str((string) parse_url($request->url(), PHP_URL_QUERY), $query);
+
+        return (string) ($query['grant_type'] ?? '') === 'ig_refresh_token'
+            && (string) ($query['access_token'] ?? '') === 'legacy_token_104';
+    });
+
+    $integration->refresh();
+    expect((string) $integration->access_token)->toBe('fresh_token_104');
+    expect($integration->token_expires_at)->not->toBeNull();
 });
 
 test('chat api sends file up to 4 megabytes', function () {

@@ -115,6 +115,30 @@ function instagramMainWebhookPayload(array $message): array
     ];
 }
 
+function instagramMainWebhookChangesPayload(array $message): array
+{
+    return [
+        'object' => 'instagram',
+        'entry' => [
+            [
+                'id' => '0',
+                'time' => now()->valueOf(),
+                'changes' => [
+                    [
+                        'field' => 'messages',
+                        'value' => [
+                            'sender' => ['id' => 'customer-2001'],
+                            'recipient' => ['id' => '178900000001'],
+                            'timestamp' => '1527459824',
+                            'message' => $message,
+                        ],
+                    ],
+                ],
+            ],
+        ],
+    ];
+}
+
 test('instagram main webhook stores chat and sends assistant text reply when conditions are met', function () {
     [, $company] = instagramWebhookContext();
 
@@ -164,6 +188,113 @@ test('instagram main webhook stores chat and sends assistant text reply when con
 
     $subscription = $company->subscription()->firstOrFail()->refresh();
     expect((int) $subscription->chat_count_current_period)->toBe(1);
+});
+
+test('instagram main webhook handles entry changes messages payload and sends assistant reply', function () {
+    [, $company] = instagramWebhookContext();
+
+    config()->set('openai.assistant.api_key', 'test-openai-key');
+    config()->set('meta.instagram.auto_reply_enabled', true);
+
+    $this->mock(OpenAiAssistantClient::class, function (MockInterface $mock): void {
+        $mock->shouldReceive('createThread')->once()->andReturn('thread_instagram_changes_1');
+        $mock->shouldReceive('sendTextMessage')->once()->andReturn('message_instagram_changes_1');
+        $mock->shouldReceive('runThreadAndGetResponse')->once()->andReturn('Салом! Чи хизмат?');
+    });
+
+    InstagramFacade::shouldReceive('sendTextMessage')
+        ->once()
+        ->andReturn('out_mid_changes_1');
+
+    $response = $this->postJson('/instagram-main-webhook', instagramMainWebhookChangesPayload([
+        'mid' => 'random_mid',
+        'text' => 'салом',
+    ]));
+
+    $response->assertOk()->assertJsonPath('ok', true);
+
+    $this->assertDatabaseHas('chats', [
+        'company_id' => $company->id,
+        'channel' => 'instagram',
+        'channel_chat_id' => '178900000001:customer-2001',
+    ]);
+
+    $chat = Chat::query()->where('company_id', $company->id)->where('channel', 'instagram')->firstOrFail();
+
+    $this->assertDatabaseHas('chat_messages', [
+        'chat_id' => $chat->id,
+        'sender_type' => ChatMessage::SENDER_CUSTOMER,
+        'direction' => ChatMessage::DIRECTION_INBOUND,
+        'message_type' => ChatMessage::TYPE_TEXT,
+        'channel_message_id' => 'random_mid:text',
+        'text' => 'салом',
+    ]);
+
+    $this->assertDatabaseHas('chat_messages', [
+        'chat_id' => $chat->id,
+        'sender_type' => ChatMessage::SENDER_ASSISTANT,
+        'direction' => ChatMessage::DIRECTION_OUTBOUND,
+        'message_type' => ChatMessage::TYPE_TEXT,
+        'channel_message_id' => 'out_mid_changes_1',
+        'text' => 'Салом! Чи хизмат?',
+    ]);
+});
+
+test('instagram main webhook also handles direct change payload without entry wrapper', function () {
+    [, $company] = instagramWebhookContext();
+
+    config()->set('openai.assistant.api_key', 'test-openai-key');
+    config()->set('meta.instagram.auto_reply_enabled', true);
+
+    $this->mock(OpenAiAssistantClient::class, function (MockInterface $mock): void {
+        $mock->shouldReceive('createThread')->once()->andReturn('thread_instagram_direct_1');
+        $mock->shouldReceive('sendTextMessage')->once()->andReturn('message_instagram_direct_1');
+        $mock->shouldReceive('runThreadAndGetResponse')->once()->andReturn('Салом! Ман ёрдам медихам.');
+    });
+
+    InstagramFacade::shouldReceive('sendTextMessage')
+        ->once()
+        ->andReturn('out_mid_direct_1');
+
+    $response = $this->postJson('/instagram-main-webhook', [
+        'field' => 'messages',
+        'value' => [
+            'sender' => ['id' => 'customer-3001'],
+            'recipient' => ['id' => '178900000001'],
+            'timestamp' => '1527459824',
+            'message' => [
+                'mid' => 'random_mid_direct',
+                'text' => 'салом',
+            ],
+        ],
+    ]);
+
+    $response->assertOk()->assertJsonPath('ok', true);
+
+    $this->assertDatabaseHas('chats', [
+        'company_id' => $company->id,
+        'channel' => 'instagram',
+        'channel_chat_id' => '178900000001:customer-3001',
+    ]);
+
+    $chat = Chat::query()->where('company_id', $company->id)->where('channel', 'instagram')->firstOrFail();
+
+    $this->assertDatabaseHas('chat_messages', [
+        'chat_id' => $chat->id,
+        'sender_type' => ChatMessage::SENDER_CUSTOMER,
+        'direction' => ChatMessage::DIRECTION_INBOUND,
+        'message_type' => ChatMessage::TYPE_TEXT,
+        'channel_message_id' => 'random_mid_direct:text',
+        'text' => 'салом',
+    ]);
+
+    $this->assertDatabaseHas('chat_messages', [
+        'chat_id' => $chat->id,
+        'sender_type' => ChatMessage::SENDER_ASSISTANT,
+        'direction' => ChatMessage::DIRECTION_OUTBOUND,
+        'message_type' => ChatMessage::TYPE_TEXT,
+        'channel_message_id' => 'out_mid_direct_1',
+    ]);
 });
 
 test('instagram main webhook stores inbound message without auto reply when subscription is inactive', function () {
@@ -252,4 +383,50 @@ test('instagram main webhook responds with voice when inbound message is audio',
         'message_type' => ChatMessage::TYPE_VOICE,
         'channel_message_id' => 'out_voice_mid_1',
     ]);
+});
+
+test('instagram main webhook appends repeated mid messages into same chat', function () {
+    [, $company] = instagramWebhookContext();
+
+    config()->set('meta.instagram.auto_reply_enabled', false);
+
+    InstagramFacade::shouldReceive('sendTextMessage')->never();
+    InstagramFacade::shouldReceive('sendMediaMessage')->never();
+
+    $payload = [
+        'field' => 'messages',
+        'value' => [
+            'sender' => ['id' => 'customer-3001'],
+            'recipient' => ['id' => '178900000001'],
+            'timestamp' => '1527459824',
+            'message' => [
+                'mid' => 'random_mid_direct',
+                'text' => 'салом',
+            ],
+        ],
+    ];
+
+    $first = $this->postJson('/instagram-main-webhook', $payload);
+    $first->assertOk()->assertJsonPath('ok', true);
+
+    $second = $this->postJson('/instagram-main-webhook', $payload);
+    $second->assertOk()->assertJsonPath('ok', true);
+
+    $chat = Chat::query()->where('company_id', $company->id)->where('channel', 'instagram')->firstOrFail();
+
+    expect($chat->channel_chat_id)->toBe('178900000001:customer-3001');
+    expect(Chat::query()->where('company_id', $company->id)->where('channel', 'instagram')->count())->toBe(1);
+
+    $inboundMessages = ChatMessage::query()
+        ->where('chat_id', $chat->id)
+        ->where('sender_type', ChatMessage::SENDER_CUSTOMER)
+        ->where('direction', ChatMessage::DIRECTION_INBOUND)
+        ->orderBy('id')
+        ->get();
+
+    expect($inboundMessages)->toHaveCount(2);
+    expect($inboundMessages[0]->channel_message_id)->toBe('random_mid_direct:text');
+    expect($inboundMessages[1]->channel_message_id)->toBe('random_mid_direct:text-1527459824000');
+    expect($inboundMessages[0]->text)->toBe('салом');
+    expect($inboundMessages[1]->text)->toBe('салом');
 });

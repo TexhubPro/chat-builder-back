@@ -22,6 +22,7 @@ class InstagramMainWebhookService
         private CompanySubscriptionService $subscriptionService,
         private OpenAiAssistantService $openAiAssistantService,
         private OpenAiAssistantClient $openAiClient,
+        private InstagramTokenService $instagramTokenService,
     ) {}
 
     public function processEvent(array $event): void
@@ -48,9 +49,10 @@ class InstagramMainWebhookService
             return;
         }
 
+        $isUserActive = (bool) $user->status;
         $company = $this->subscriptionService->provisionDefaultWorkspaceForUser($user->id, $user->name);
         $assistantChannel = $this->resolveAssistantChannel($company, $integration, $recipientId);
-        $assistant = $this->resolveAssistant($company, $assistantChannel);
+        $assistant = $this->resolveAssistant($assistantChannel);
 
         $chat = $this->resolveChat(
             $company,
@@ -71,14 +73,14 @@ class InstagramMainWebhookService
 
         $createdInboundMessages = [];
         foreach ($parts as $part) {
-            $channelMessageId = $part['channel_message_id'];
+            $baseChannelMessageId = (string) $part['channel_message_id'];
+            $channelMessageId = $this->resolveInboundChannelMessageId(
+                $chat->id,
+                $baseChannelMessageId,
+                $part,
+            );
 
-            $existing = ChatMessage::query()
-                ->where('chat_id', $chat->id)
-                ->where('channel_message_id', $channelMessageId)
-                ->first();
-
-            if ($existing) {
+            if ($channelMessageId === null) {
                 continue;
             }
 
@@ -113,7 +115,10 @@ class InstagramMainWebhookService
 
         if (! $this->shouldAutoReply(
             $chat,
+            $integration,
+            $assistantChannel,
             $assistant,
+            $isUserActive,
             $hasActiveSubscription,
             $hasRemainingIncludedChats,
             $hasReplyableContent
@@ -160,7 +165,10 @@ class InstagramMainWebhookService
 
     private function shouldAutoReply(
         Chat $chat,
+        InstagramIntegration $integration,
+        ?AssistantChannel $assistantChannel,
         ?Assistant $assistant,
+        bool $isUserActive,
         bool $hasActiveSubscription,
         bool $hasRemainingIncludedChats,
         bool $hasReplyableContent,
@@ -170,6 +178,18 @@ class InstagramMainWebhookService
         }
 
         if (! $hasReplyableContent) {
+            return false;
+        }
+
+        if (! $isUserActive) {
+            return false;
+        }
+
+        if (! (bool) $integration->is_active) {
+            return false;
+        }
+
+        if (! $assistantChannel || ! $assistantChannel->is_active) {
             return false;
         }
 
@@ -239,7 +259,6 @@ class InstagramMainWebhookService
     private function resolveIntegration(string $recipientId): ?InstagramIntegration
     {
         return InstagramIntegration::query()
-            ->where('is_active', true)
             ->where(function ($builder) use ($recipientId): void {
                 $builder
                     ->where('receiver_id', $recipientId)
@@ -257,29 +276,25 @@ class InstagramMainWebhookService
         return $company->assistantChannels()
             ->with('assistant')
             ->where('channel', AssistantChannel::CHANNEL_INSTAGRAM)
-            ->where('is_active', true)
             ->where(function ($builder) use ($integration, $recipientId): void {
                 $builder
                     ->where('external_account_id', $recipientId)
                     ->orWhere('external_account_id', (string) $integration->instagram_user_id)
                     ->orWhere('external_account_id', (string) ($integration->receiver_id ?? ''));
             })
+            ->orderByDesc('is_active')
             ->orderBy('id')
             ->first();
     }
 
     private function resolveAssistant(
-        Company $company,
         ?AssistantChannel $assistantChannel,
     ): ?Assistant {
         if ($assistantChannel?->assistant && $assistantChannel->assistant->is_active) {
             return $assistantChannel->assistant;
         }
 
-        return $company->assistants()
-            ->where('is_active', true)
-            ->orderBy('id')
-            ->first();
+        return null;
     }
 
     private function resolveChat(
@@ -344,9 +359,7 @@ class InstagramMainWebhookService
         $message = is_array($event['message'] ?? null) ? $event['message'] : [];
         $payload = is_array($event['payload'] ?? null) ? $event['payload'] : $event;
         $timestamp = $event['timestamp'] ?? null;
-        $sentAt = is_numeric($timestamp)
-            ? Carbon::createFromTimestampMs((int) $timestamp)
-            : now();
+        $sentAt = $this->resolveEventTimestamp($timestamp);
 
         $parts = [];
         $baseMessageId = trim((string) ($message['mid'] ?? $event['mid'] ?? ''));
@@ -433,6 +446,65 @@ class InstagramMainWebhookService
         }
 
         return $parts;
+    }
+
+    private function resolveEventTimestamp(mixed $timestamp): Carbon
+    {
+        if (! is_numeric($timestamp)) {
+            return now();
+        }
+
+        $normalized = (string) $timestamp;
+        $digitsOnly = preg_replace('/\D+/', '', $normalized) ?? '';
+
+        if ($digitsOnly !== '' && strlen($digitsOnly) <= 10) {
+            return Carbon::createFromTimestamp((int) $timestamp);
+        }
+
+        return Carbon::createFromTimestampMs((int) $timestamp);
+    }
+
+    private function resolveInboundChannelMessageId(
+        int $chatId,
+        string $baseChannelMessageId,
+        array $part,
+    ): ?string {
+        $existing = ChatMessage::query()
+            ->where('chat_id', $chatId)
+            ->where('channel_message_id', $baseChannelMessageId)
+            ->first();
+
+        if (! $existing) {
+            return $baseChannelMessageId;
+        }
+
+        $timestampSuffix = $this->inboundTimestampSuffix($part['sent_at'] ?? null);
+        $candidate = $baseChannelMessageId.'-'.$timestampSuffix;
+        $attempt = 1;
+
+        while (ChatMessage::query()
+            ->where('chat_id', $chatId)
+            ->where('channel_message_id', $candidate)
+            ->exists()) {
+            $attempt += 1;
+
+            if ($attempt > 50) {
+                return $baseChannelMessageId.'-'.Str::uuid();
+            }
+
+            $candidate = $baseChannelMessageId.'-'.$timestampSuffix.'-'.$attempt;
+        }
+
+        return $candidate;
+    }
+
+    private function inboundTimestampSuffix(mixed $sentAt): string
+    {
+        if ($sentAt instanceof \DateTimeInterface) {
+            return $sentAt->format('Uv');
+        }
+
+        return now()->format('Uv');
     }
 
     private function summarizePayload(array $payload): ?string
@@ -619,6 +691,11 @@ class InstagramMainWebhookService
         string $assistantResponse,
         array $parts,
     ): array {
+        $integration = $this->instagramTokenService->ensureTokenIsFresh(
+            $integration,
+            max((int) config('meta.instagram.token_refresh_grace_seconds', 900), 0),
+        );
+
         $accessToken = trim((string) $integration->access_token);
         $igUserId = trim((string) ($integration->receiver_id ?: $recipientId));
 

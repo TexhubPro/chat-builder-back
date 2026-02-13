@@ -4,18 +4,23 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Assistant as AssistantModel;
+use App\Models\AssistantChannel;
 use App\Models\Chat;
 use App\Models\ChatMessage;
 use App\Models\Company;
 use App\Models\User;
 use App\Services\CompanySubscriptionService;
+use App\Services\InstagramTokenService;
 use App\Services\OpenAiAssistantService;
+use App\Services\TelegramBotApiService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Http\Request;
-use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
+use TexHub\Meta\Facades\Instagram as InstagramFacade;
+use TexHub\Meta\Models\InstagramIntegration;
 use TexHub\OpenAi\Assistant as OpenAiAssistantClient;
 use Throwable;
 
@@ -85,6 +90,45 @@ class ChatMessageController extends Controller
             ? $this->resolveMessageTypeForFile($filePayload['mime_type'])
             : (string) ($validated['message_type'] ?? ChatMessage::TYPE_TEXT);
 
+        $messageText = $normalizedText ?? ($filePayload['name'] ?? null);
+        $mediaUrl = $filePayload['url'] ?? $this->nullableTrimmedString($validated['media_url'] ?? null);
+        $linkUrl = $this->nullableTrimmedString($validated['link_url'] ?? null);
+        $channelMessageId = null;
+
+        if ($this->shouldDispatchInstagramOutbound($chat, $direction)) {
+            [$channelMessageId, $dispatchError] = $this->dispatchOutboundInstagramMessage(
+                $company,
+                $chat,
+                $messageType,
+                $normalizedText,
+                $mediaUrl,
+                $linkUrl,
+            );
+
+            if ($channelMessageId === null) {
+                return response()->json([
+                    'message' => $dispatchError ?? 'Failed to deliver message to Instagram.',
+                ], 422);
+            }
+        }
+
+        if ($this->shouldDispatchTelegramOutbound($chat, $direction)) {
+            [$channelMessageId, $dispatchError] = $this->dispatchOutboundTelegramMessage(
+                $company,
+                $chat,
+                $messageType,
+                $normalizedText,
+                $mediaUrl,
+                $linkUrl,
+            );
+
+            if ($channelMessageId === null) {
+                return response()->json([
+                    'message' => $dispatchError ?? 'Failed to deliver message to Telegram.',
+                ], 422);
+            }
+        }
+
         $message = ChatMessage::query()->create([
             'user_id' => $company->user_id,
             'company_id' => $company->id,
@@ -93,12 +137,13 @@ class ChatMessageController extends Controller
             'sender_type' => $senderType,
             'direction' => $direction,
             'status' => $direction === ChatMessage::DIRECTION_OUTBOUND ? 'sent' : 'received',
+            'channel_message_id' => $channelMessageId,
             'message_type' => $messageType,
-            'text' => $normalizedText ?? ($filePayload['name'] ?? null),
-            'media_url' => $filePayload['url'] ?? $this->nullableTrimmedString($validated['media_url'] ?? null),
+            'text' => $messageText,
+            'media_url' => $mediaUrl,
             'media_mime_type' => $filePayload['mime_type'] ?? null,
             'media_size' => $filePayload['size'] ?? null,
-            'link_url' => $this->nullableTrimmedString($validated['link_url'] ?? null),
+            'link_url' => $linkUrl,
             'attachments' => $attachments !== [] ? $attachments : null,
             'payload' => is_array($validated['payload'] ?? null) ? $validated['payload'] : null,
             'sent_at' => now(),
@@ -669,6 +714,389 @@ class ChatMessageController extends Controller
         return ChatMessage::TYPE_FILE;
     }
 
+    private function shouldDispatchInstagramOutbound(Chat $chat, string $direction): bool
+    {
+        if ($chat->channel !== AssistantChannel::CHANNEL_INSTAGRAM) {
+            return false;
+        }
+
+        return $direction === ChatMessage::DIRECTION_OUTBOUND;
+    }
+
+    private function shouldDispatchTelegramOutbound(Chat $chat, string $direction): bool
+    {
+        if ($chat->channel !== AssistantChannel::CHANNEL_TELEGRAM) {
+            return false;
+        }
+
+        return $direction === ChatMessage::DIRECTION_OUTBOUND;
+    }
+
+    private function dispatchOutboundInstagramMessage(
+        Company $company,
+        Chat $chat,
+        string $messageType,
+        ?string $text,
+        ?string $mediaUrl,
+        ?string $linkUrl,
+    ): array {
+        $context = $this->resolveInstagramDispatchContext($company, $chat);
+
+        if (! is_array($context)) {
+            return [null, 'Instagram integration is not configured for this chat.'];
+        }
+
+        /** @var InstagramIntegration $integration */
+        $integration = $context['integration'];
+        $igUserId = (string) $context['ig_user_id'];
+        $recipientId = (string) $context['recipient_id'];
+
+        $accessToken = trim((string) $integration->access_token);
+        if ($accessToken === '') {
+            return [null, 'Instagram access token is missing. Reconnect integration.'];
+        }
+
+        if (in_array($messageType, [
+            ChatMessage::TYPE_IMAGE,
+            ChatMessage::TYPE_VIDEO,
+            ChatMessage::TYPE_VOICE,
+            ChatMessage::TYPE_AUDIO,
+            ChatMessage::TYPE_FILE,
+        ], true)) {
+            $externalMediaUrl = $this->resolveExternalMediaUrl($mediaUrl);
+
+            if ($externalMediaUrl === null) {
+                return [null, 'Instagram media URL is invalid or not publicly accessible.'];
+            }
+
+            $instagramType = $this->instagramAttachmentTypeForMessageType($messageType);
+            $messageId = InstagramFacade::sendMediaMessage(
+                $igUserId,
+                $recipientId,
+                $instagramType,
+                $externalMediaUrl,
+                false,
+                $accessToken,
+                false,
+            );
+
+            if (! is_string($messageId) || trim($messageId) === '') {
+                return [null, 'Instagram media message delivery failed.'];
+            }
+
+            return [trim($messageId), null];
+        }
+
+        $textPayload = $text ?? $linkUrl;
+        $textPayload = $this->nullableTrimmedString($textPayload);
+
+        if ($textPayload === null) {
+            return [null, 'Instagram text message is empty.'];
+        }
+
+        $messageId = InstagramFacade::sendTextMessage(
+            $igUserId,
+            $recipientId,
+            $textPayload,
+            $accessToken,
+            false,
+        );
+
+        if (! is_string($messageId) || trim($messageId) === '') {
+            return [null, 'Instagram text message delivery failed.'];
+        }
+
+        return [trim($messageId), null];
+    }
+
+    private function resolveInstagramDispatchContext(Company $company, Chat $chat): ?array
+    {
+        if ($chat->channel !== AssistantChannel::CHANNEL_INSTAGRAM) {
+            return null;
+        }
+
+        $assistantChannel = $chat->assistant_channel_id
+            ? AssistantChannel::query()->whereKey($chat->assistant_channel_id)->first()
+            : null;
+
+        if (
+            $assistantChannel
+            && (
+                ! $assistantChannel->is_active
+                || $assistantChannel->channel !== AssistantChannel::CHANNEL_INSTAGRAM
+            )
+        ) {
+            return null;
+        }
+
+        $metadata = is_array($chat->metadata) ? $chat->metadata : [];
+        $instagramMeta = is_array($metadata['instagram'] ?? null)
+            ? $metadata['instagram']
+            : [];
+
+        $integrationId = (int) ($instagramMeta['integration_id'] ?? 0);
+        $businessAccountId = $this->resolveInstagramBusinessAccountId($chat, $instagramMeta);
+        $customerAccountId = $this->resolveInstagramCustomerAccountId($chat);
+
+        if ($businessAccountId === '' || $customerAccountId === '') {
+            return null;
+        }
+
+        $integration = null;
+
+        if ($integrationId > 0) {
+            $integration = InstagramIntegration::query()
+                ->where('user_id', $company->user_id)
+                ->whereKey($integrationId)
+                ->first();
+        }
+
+        if (! $integration) {
+            $integration = InstagramIntegration::query()
+                ->where('user_id', $company->user_id)
+                ->where(function ($builder) use ($businessAccountId): void {
+                    $builder
+                        ->where('receiver_id', $businessAccountId)
+                        ->orWhere('instagram_user_id', $businessAccountId);
+                })
+                ->orderByDesc('id')
+                ->first();
+        }
+
+        if (! $integration || ! (bool) $integration->is_active) {
+            return null;
+        }
+
+        $integration = $this->instagramTokenService()->ensureTokenIsFresh(
+            $integration,
+            $this->instagramTokenRefreshGraceSeconds(),
+        );
+
+        $igUserId = trim((string) ($integration->receiver_id ?: $businessAccountId));
+
+        if ($igUserId === '') {
+            return null;
+        }
+
+        return [
+            'integration' => $integration,
+            'ig_user_id' => $igUserId,
+            'recipient_id' => $customerAccountId,
+        ];
+    }
+
+    private function dispatchOutboundTelegramMessage(
+        Company $company,
+        Chat $chat,
+        string $messageType,
+        ?string $text,
+        ?string $mediaUrl,
+        ?string $linkUrl,
+    ): array {
+        $context = $this->resolveTelegramDispatchContext($company, $chat);
+
+        if (! is_array($context)) {
+            return [null, 'Telegram integration is not configured for this chat.'];
+        }
+
+        $botToken = (string) $context['bot_token'];
+        $chatId = (string) $context['chat_id'];
+
+        if (in_array($messageType, [
+            ChatMessage::TYPE_IMAGE,
+            ChatMessage::TYPE_VIDEO,
+            ChatMessage::TYPE_VOICE,
+            ChatMessage::TYPE_AUDIO,
+            ChatMessage::TYPE_FILE,
+        ], true)) {
+            $externalMediaUrl = $this->resolveExternalMediaUrl($mediaUrl);
+
+            if ($externalMediaUrl === null) {
+                return [null, 'Telegram media URL is invalid or not publicly accessible.'];
+            }
+
+            $telegramMethod = $this->telegramMethodForMessageType($messageType);
+            $caption = $this->nullableTrimmedString($text);
+
+            try {
+                $messageId = $this->telegramBotApiService()->sendMediaMessage(
+                    $botToken,
+                    $chatId,
+                    $telegramMethod,
+                    $externalMediaUrl,
+                    $caption,
+                );
+            } catch (Throwable $exception) {
+                return [null, $exception->getMessage() !== ''
+                    ? $exception->getMessage()
+                    : 'Telegram media message delivery failed.'];
+            }
+
+            if (! is_string($messageId) || trim($messageId) === '') {
+                return [null, 'Telegram media message delivery failed.'];
+            }
+
+            return [trim($messageId), null];
+        }
+
+        $textPayload = $text ?? $linkUrl;
+        $textPayload = $this->nullableTrimmedString($textPayload);
+
+        if ($textPayload === null) {
+            return [null, 'Telegram text message is empty.'];
+        }
+
+        try {
+            $messageId = $this->telegramBotApiService()->sendTextMessage(
+                $botToken,
+                $chatId,
+                $textPayload,
+            );
+        } catch (Throwable $exception) {
+            return [null, $exception->getMessage() !== ''
+                ? $exception->getMessage()
+                : 'Telegram text message delivery failed.'];
+        }
+
+        if (! is_string($messageId) || trim($messageId) === '') {
+            return [null, 'Telegram text message delivery failed.'];
+        }
+
+        return [trim($messageId), null];
+    }
+
+    private function resolveTelegramDispatchContext(Company $company, Chat $chat): ?array
+    {
+        if ($chat->channel !== AssistantChannel::CHANNEL_TELEGRAM) {
+            return null;
+        }
+
+        $assistantChannel = $chat->assistant_channel_id
+            ? AssistantChannel::query()->whereKey($chat->assistant_channel_id)->first()
+            : AssistantChannel::query()
+                ->where('company_id', $company->id)
+                ->where('assistant_id', $chat->assistant_id)
+                ->where('channel', AssistantChannel::CHANNEL_TELEGRAM)
+                ->orderByDesc('is_active')
+                ->orderBy('id')
+                ->first();
+
+        if (
+            ! $assistantChannel
+            || ! $assistantChannel->is_active
+            || $assistantChannel->channel !== AssistantChannel::CHANNEL_TELEGRAM
+        ) {
+            return null;
+        }
+
+        $credentials = is_array($assistantChannel->credentials) ? $assistantChannel->credentials : [];
+        $botToken = trim((string) ($credentials['bot_token'] ?? ''));
+
+        if ($botToken === '') {
+            return null;
+        }
+
+        $chatId = trim((string) ($chat->channel_chat_id ?? ''));
+        if ($chatId === '') {
+            $chatId = trim((string) ($chat->channel_user_id ?? ''));
+        }
+
+        if ($chatId === '') {
+            return null;
+        }
+
+        return [
+            'assistant_channel' => $assistantChannel,
+            'bot_token' => $botToken,
+            'chat_id' => $chatId,
+        ];
+    }
+
+    private function resolveInstagramBusinessAccountId(Chat $chat, array $instagramMeta): string
+    {
+        $receiverId = trim((string) ($instagramMeta['receiver_id'] ?? ''));
+        if ($receiverId !== '') {
+            return $receiverId;
+        }
+
+        $channelChatId = trim((string) ($chat->channel_chat_id ?? ''));
+        if ($channelChatId !== '' && str_contains($channelChatId, ':')) {
+            [$businessId] = explode(':', $channelChatId, 2);
+            $businessId = trim($businessId);
+
+            if ($businessId !== '') {
+                return $businessId;
+            }
+        }
+
+        return trim((string) ($instagramMeta['instagram_user_id'] ?? ''));
+    }
+
+    private function resolveInstagramCustomerAccountId(Chat $chat): string
+    {
+        $channelUserId = trim((string) ($chat->channel_user_id ?? ''));
+        if ($channelUserId !== '') {
+            return $channelUserId;
+        }
+
+        $channelChatId = trim((string) ($chat->channel_chat_id ?? ''));
+        if ($channelChatId !== '' && str_contains($channelChatId, ':')) {
+            [, $customerId] = explode(':', $channelChatId, 2);
+
+            return trim((string) $customerId);
+        }
+
+        return '';
+    }
+
+    private function telegramMethodForMessageType(string $messageType): string
+    {
+        return match ($messageType) {
+            ChatMessage::TYPE_IMAGE => 'sendPhoto',
+            ChatMessage::TYPE_VIDEO => 'sendVideo',
+            ChatMessage::TYPE_AUDIO => 'sendAudio',
+            ChatMessage::TYPE_VOICE => 'sendVoice',
+            default => 'sendDocument',
+        };
+    }
+
+    private function instagramAttachmentTypeForMessageType(string $messageType): string
+    {
+        return match ($messageType) {
+            ChatMessage::TYPE_IMAGE => 'image',
+            ChatMessage::TYPE_VIDEO => 'video',
+            ChatMessage::TYPE_AUDIO, ChatMessage::TYPE_VOICE => 'audio',
+            default => 'file',
+        };
+    }
+
+    private function resolveExternalMediaUrl(?string $mediaUrl): ?string
+    {
+        $normalized = trim((string) ($mediaUrl ?? ''));
+
+        if ($normalized === '') {
+            return null;
+        }
+
+        if (Str::startsWith($normalized, ['http://', 'https://'])) {
+            return $normalized;
+        }
+
+        $path = Str::startsWith($normalized, '/') ? $normalized : '/'.ltrim($normalized, '/');
+
+        return url($path);
+    }
+
+    private function instagramTokenRefreshGraceSeconds(): int
+    {
+        return max((int) config('meta.instagram.token_refresh_grace_seconds', 900), 0);
+    }
+
+    private function telegramBotApiService(): TelegramBotApiService
+    {
+        return app(TelegramBotApiService::class);
+    }
+
     private function shouldAutoReplyToAssistantChat(
         Chat $chat,
         ?AssistantModel $assistant,
@@ -967,5 +1395,10 @@ class ChatMessageController extends Controller
     private function openAiClient(): OpenAiAssistantClient
     {
         return app(OpenAiAssistantClient::class);
+    }
+
+    private function instagramTokenService(): InstagramTokenService
+    {
+        return app(InstagramTokenService::class);
     }
 }

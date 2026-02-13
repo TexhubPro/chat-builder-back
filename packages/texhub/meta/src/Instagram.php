@@ -179,8 +179,8 @@ class Instagram
     private function endpoint(string $igUserId): string
     {
         $base = rtrim((string) ($this->config['graph_base'] ?? 'https://graph.instagram.com'), '/');
-        $version = trim((string) ($this->config['api_version'] ?? 'v20.0'));
-        $version = $version !== '' ? $version : 'v20.0';
+        $version = trim((string) ($this->config['api_version'] ?? 'v23.0'));
+        $version = $version !== '' ? $version : 'v23.0';
 
         return $base . '/' . $version . '/' . $igUserId . '/messages';
     }
