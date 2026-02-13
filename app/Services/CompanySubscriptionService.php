@@ -12,7 +12,10 @@ class CompanySubscriptionService
 {
     public function provisionDefaultWorkspaceForUser(int $userId, string $userName): Company
     {
-        $company = Company::query()->where('user_id', $userId)->first();
+        $company = Company::query()
+            ->where('user_id', $userId)
+            ->orderByDesc('id')
+            ->first();
 
         if (! $company) {
             $baseName = trim($userName) !== '' ? trim($userName) : 'Company';

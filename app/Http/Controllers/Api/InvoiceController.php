@@ -36,9 +36,9 @@ class InvoiceController extends Controller
     public function pay(Request $request, Invoice $invoice): JsonResponse
     {
         $user = $this->resolveUser($request);
-        $company = $this->resolveCompany($user);
+        $company = $invoice->company;
 
-        if ($invoice->company_id !== $company->id) {
+        if (!$company || (int) $company->user_id !== (int) $user->id) {
             return response()->json([
                 'message' => 'Invoice not found.',
             ], 404);
@@ -438,4 +438,3 @@ class InvoiceController extends Controller
         return array_replace_recursive($base, $patch);
     }
 }
-
