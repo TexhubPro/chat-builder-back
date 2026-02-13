@@ -660,14 +660,14 @@ class TelegramMainWebhookService
                 $this->openAiAssistantService->syncAssistant($assistant);
                 $assistant->refresh();
             } catch (Throwable) {
-                return null;
+                return $this->fallbackAssistantText($assistant, $prompt);
             }
         }
 
         $openAiAssistantId = trim((string) ($assistant->openai_assistant_id ?? ''));
 
         if ($openAiAssistantId === '') {
-            return null;
+            return $this->fallbackAssistantText($assistant, $prompt);
         }
 
         $chatMetadata = is_array($chat->metadata) ? $chat->metadata : [];
@@ -686,7 +686,7 @@ class TelegramMainWebhookService
             ]) ?? '');
 
             if ($threadId === '') {
-                return null;
+                return $this->fallbackAssistantText($assistant, $prompt);
             }
 
             $threadMap[$threadKey] = $threadId;
@@ -737,7 +737,7 @@ class TelegramMainWebhookService
         }
 
         if (! is_string($messageId) || trim($messageId) === '') {
-            return null;
+            return $this->fallbackAssistantText($assistant, $prompt);
         }
 
         $responseText = $this->openAiClient->runThreadAndGetResponse(
@@ -750,7 +750,14 @@ class TelegramMainWebhookService
 
         $normalized = trim((string) ($responseText ?? ''));
 
-        return $normalized === '' ? null : $normalized;
+        return $normalized === '' ? $this->fallbackAssistantText($assistant, $prompt) : $normalized;
+    }
+
+    private function fallbackAssistantText(Assistant $assistant, string $prompt): string
+    {
+        $safePrompt = Str::limit(trim($prompt), 220, '...');
+
+        return '['.$assistant->name.'] Received: '.$safePrompt;
     }
 
     private function sendAssistantResponseToTelegram(
@@ -807,4 +814,3 @@ class TelegramMainWebhookService
         };
     }
 }
-

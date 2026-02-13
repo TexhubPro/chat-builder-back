@@ -13,6 +13,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Throwable;
 
@@ -646,7 +647,15 @@ class AssistantController extends Controller
             }
 
             return null;
-        } catch (Throwable) {
+        } catch (Throwable $exception) {
+            Log::warning('OpenAI assistant synchronization failed', [
+                'assistant_id' => $assistant->id,
+                'user_id' => $user->id,
+                'company_id' => $assistant->company_id,
+                'operation' => $assistant->openai_assistant_id ? 'update' : 'create',
+                'exception' => $exception->getMessage(),
+            ]);
+
             return self::OPENAI_SYNC_FAILED_MESSAGE;
         }
     }

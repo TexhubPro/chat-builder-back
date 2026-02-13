@@ -24,7 +24,7 @@ class Assistant
     public function createAssistant(array $payload): ?string
     {
         $defaults = $this->config['defaults'] ?? [];
-        $body = array_merge($defaults, $payload);
+        $body = $this->normalizeAssistantPayload(array_merge($defaults, $payload));
 
         if (empty($body['model'])) {
             $this->logError('OpenAI assistant create failed', [
@@ -84,6 +84,8 @@ class Assistant
 
             return false;
         }
+
+        $payload = $this->normalizeAssistantPayload($payload);
 
         try {
             $response = $this->http()
@@ -1930,5 +1932,44 @@ class Assistant
         } catch (Throwable $exception) {
             // Logging should not break main flow.
         }
+    }
+
+    /**
+     * Normalize assistant payload fields that are strict-typed by OpenAI API.
+     */
+    private function normalizeAssistantPayload(array $payload): array
+    {
+        if (array_key_exists('temperature', $payload)) {
+            if (is_numeric($payload['temperature'])) {
+                $payload['temperature'] = (float) $payload['temperature'];
+            } else {
+                unset($payload['temperature']);
+            }
+        }
+
+        if (array_key_exists('top_p', $payload)) {
+            if (is_numeric($payload['top_p'])) {
+                $payload['top_p'] = (float) $payload['top_p'];
+            } else {
+                unset($payload['top_p']);
+            }
+        }
+
+        if (array_key_exists('response_format', $payload)) {
+            $responseFormat = $payload['response_format'];
+
+            if (is_string($responseFormat)) {
+                $responseFormat = trim($responseFormat);
+                if ($responseFormat === '') {
+                    unset($payload['response_format']);
+                } else {
+                    $payload['response_format'] = $responseFormat;
+                }
+            } elseif (! is_array($responseFormat)) {
+                unset($payload['response_format']);
+            }
+        }
+
+        return $payload;
     }
 }
