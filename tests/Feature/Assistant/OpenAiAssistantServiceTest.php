@@ -362,3 +362,52 @@ test('openai assistant service uploads missing openai file id from storage befor
     expect((string) data_get($instructionFile->metadata, 'openai_vector_store_file_id'))->toBe('vs_file_from_storage_1');
     expect((array) data_get($capturedUpdatePayload, 'tool_resources.file_search.vector_store_ids'))->toBe(['vs_existing_storage_1']);
 });
+
+test('openai assistant service recreates assistant when update fails for stale openai id', function () {
+    config()->set('openai.assistant.api_key', 'test-openai-key');
+    config()->set('openai.assistant.defaults.model', 'gpt-4o');
+
+    $user = User::factory()->create([
+        'status' => true,
+        'email_verified_at' => now(),
+    ]);
+
+    $company = Company::query()->create([
+        'user_id' => $user->id,
+        'name' => 'Recovery Company',
+        'slug' => 'recovery-company-'.$user->id,
+        'status' => Company::STATUS_ACTIVE,
+    ]);
+
+    $assistant = Assistant::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'name' => 'Recovery Assistant',
+        'openai_assistant_id' => 'asst_stale_id',
+        'openai_vector_store_id' => null,
+        'instructions' => 'Recover stale OpenAI assistant id.',
+        'conversation_tone' => Assistant::TONE_POLITE,
+        'enable_file_search' => false,
+        'enable_file_analysis' => false,
+        'enable_voice' => false,
+        'enable_web_search' => false,
+        'settings' => [],
+    ]);
+
+    $client = Mockery::mock(OpenAiAssistantClient::class);
+    $client->shouldReceive('updateAssistant')
+        ->once()
+        ->with('asst_stale_id', Mockery::type('array'))
+        ->andReturn(false);
+    $client->shouldReceive('createAssistant')
+        ->once()
+        ->with(Mockery::type('array'))
+        ->andReturn('asst_recreated_1');
+
+    $service = new OpenAiAssistantService($client);
+    $service->syncAssistant($assistant);
+
+    $assistant->refresh();
+
+    expect($assistant->openai_assistant_id)->toBe('asst_recreated_1');
+});

@@ -61,9 +61,20 @@ class OpenAiAssistantService
 
         $updated = $this->client->updateAssistant($assistant->openai_assistant_id, $payload);
 
-        if (! $updated) {
+        if ($updated) {
+            return;
+        }
+
+        // Recover from stale/removed remote assistant id by creating a new assistant.
+        $newAssistantId = $this->client->createAssistant($payload);
+
+        if (! is_string($newAssistantId) || $newAssistantId === '') {
             throw new RuntimeException('OpenAI assistant sync failed during update.');
         }
+
+        $assistant->forceFill([
+            'openai_assistant_id' => $newAssistantId,
+        ])->save();
     }
 
     public function uploadInstructionFile(
