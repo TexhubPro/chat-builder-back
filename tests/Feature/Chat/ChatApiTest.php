@@ -5,6 +5,10 @@ use App\Models\Chat;
 use App\Models\ChatMessage;
 use App\Models\Company;
 use App\Models\CompanySubscription;
+use App\Models\CompanyClient;
+use App\Models\CompanyClientOrder;
+use App\Models\CompanyClientTask;
+use App\Models\CompanyClientQuestion;
 use App\Models\SubscriptionPlan;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -375,6 +379,78 @@ test('chat api can generate assistant reply and store thread metadata', function
     )->toBe(2);
 });
 
+test('chat api can toggle ai replies per chat', function () {
+    [$user, $company, $token] = chatApiContext();
+
+    $chat = Chat::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'channel' => 'assistant',
+        'channel_chat_id' => 'assistant-toggle-1',
+        'name' => 'Toggle chat',
+        'status' => Chat::STATUS_OPEN,
+        'metadata' => [],
+    ]);
+
+    $this
+        ->withHeader('Authorization', "Bearer {$token}")
+        ->patchJson('/api/chats/'.$chat->id.'/ai-enabled', [
+            'enabled' => false,
+        ])
+        ->assertOk()
+        ->assertJsonPath('chat.metadata.is_active', false);
+
+    $chat->refresh();
+    $metadata = is_array($chat->metadata) ? $chat->metadata : [];
+    expect($metadata['is_active'] ?? null)->toBeFalse();
+
+    $this
+        ->withHeader('Authorization', "Bearer {$token}")
+        ->patchJson('/api/chats/'.$chat->id.'/ai-enabled', [
+            'enabled' => true,
+        ])
+        ->assertOk()
+        ->assertJsonPath('chat.metadata.is_active', true);
+});
+
+test('chat api blocks assistant reply when chat ai is disabled', function () {
+    [$user, $company, $token] = chatApiContext();
+
+    $assistant = Assistant::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'name' => 'Disabled Chat Assistant',
+        'openai_assistant_id' => 'asst_disabled_chat',
+        'is_active' => true,
+    ]);
+
+    $chat = Chat::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'assistant_id' => $assistant->id,
+        'channel' => 'assistant',
+        'channel_chat_id' => 'assistant-disabled-1',
+        'name' => 'Disabled chat',
+        'status' => Chat::STATUS_OPEN,
+        'metadata' => [
+            'is_active' => false,
+        ],
+    ]);
+
+    $this
+        ->withHeader('Authorization', "Bearer {$token}")
+        ->postJson('/api/chats/'.$chat->id.'/assistant-reply', [
+            'assistant_id' => $assistant->id,
+            'prompt' => 'hello',
+        ])
+        ->assertStatus(422)
+        ->assertJsonPath('message', 'AI replies are disabled for this chat.');
+
+    expect(
+        ChatMessage::query()->where('chat_id', $chat->id)->count()
+    )->toBe(0);
+});
+
 test('chat webhook stores telegram message and increments usage', function () {
     [, $company] = chatApiContext();
 
@@ -459,4 +535,231 @@ test('chat api auto-creates assistant test chat when assistant has no chats', fu
         'channel' => 'assistant',
         'channel_chat_id' => 'assistant-test-'.$assistant->id,
     ]);
+});
+
+test('chat insights returns contacts and history linked to chat', function () {
+    [$user, $company, $token] = chatApiContext();
+
+    $chat = Chat::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'channel' => 'telegram',
+        'channel_chat_id' => 'tg-insights-1',
+        'channel_user_id' => '+992900000001',
+        'name' => 'Insights Lead',
+        'metadata' => [
+            'address' => 'Dushanbe',
+        ],
+        'status' => Chat::STATUS_OPEN,
+    ]);
+
+    $client = CompanyClient::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'name' => 'Insights Lead',
+        'phone' => '+992900000001',
+        'email' => 'insights@example.com',
+        'status' => CompanyClient::STATUS_ACTIVE,
+    ]);
+
+    $task = CompanyClientTask::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'company_client_id' => $client->id,
+        'description' => 'Follow up by phone',
+        'status' => CompanyClientTask::STATUS_TODO,
+        'board_column' => 'todo',
+        'position' => 0,
+        'priority' => CompanyClientTask::PRIORITY_NORMAL,
+        'sync_with_calendar' => false,
+        'metadata' => [
+            'chat_id' => $chat->id,
+            'chat_message_id' => 111,
+        ],
+    ]);
+
+    CompanyClientQuestion::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'company_client_id' => $client->id,
+        'description' => 'Unrelated question',
+        'status' => CompanyClientQuestion::STATUS_OPEN,
+        'board_column' => 'new',
+        'position' => 0,
+        'metadata' => [
+            'chat_id' => 999999,
+        ],
+    ]);
+
+    $response = $this
+        ->withHeader('Authorization', "Bearer {$token}")
+        ->getJson('/api/chats/'.$chat->id.'/insights')
+        ->assertOk()
+        ->json();
+
+    expect($response['client']['id'])->toBe($client->id);
+    expect($response['contacts'])->not->toBeEmpty();
+    expect($response['history'])->toHaveCount(1);
+    expect($response['history'][0]['id'])->toBe('task-'.$task->id);
+    expect((int) ($response['history'][0]['chat_message_id'] ?? 0))->toBe(111);
+});
+
+test('chat api can create task from chat and link it in metadata', function () {
+    [$user, $company, $token] = chatApiContext();
+
+    $chat = Chat::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'channel' => 'assistant',
+        'channel_chat_id' => 'assistant-task-1',
+        'channel_user_id' => 'assistant-user-task-1',
+        'name' => 'Create Task Lead',
+        'status' => Chat::STATUS_OPEN,
+        'metadata' => [],
+    ]);
+
+    $chatMessage = ChatMessage::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'chat_id' => $chat->id,
+        'sender_type' => ChatMessage::SENDER_CUSTOMER,
+        'direction' => ChatMessage::DIRECTION_INBOUND,
+        'status' => 'received',
+        'message_type' => ChatMessage::TYPE_TEXT,
+        'text' => 'Need a callback',
+        'sent_at' => now()->subMinute(),
+    ]);
+
+    $response = $this
+        ->withHeader('Authorization', "Bearer {$token}")
+        ->postJson('/api/chats/'.$chat->id.'/tasks', [
+            'description' => 'Create task from info panel',
+            'chat_message_id' => $chatMessage->id,
+        ])
+        ->assertCreated()
+        ->json();
+
+    expect($response['task']['type'])->toBe('task');
+    expect((int) ($response['task']['chat_message_id'] ?? 0))->toBe($chatMessage->id);
+
+    $this->assertDatabaseHas('company_client_tasks', [
+        'company_id' => $company->id,
+        'description' => 'Create task from info panel',
+    ]);
+
+    $task = CompanyClientTask::query()
+        ->where('company_id', $company->id)
+        ->where('description', 'Create task from info panel')
+        ->latest('id')
+        ->first();
+
+    expect($task)->not->toBeNull();
+    expect((int) data_get($task?->metadata, 'chat_id'))->toBe($chat->id);
+    expect((int) data_get($task?->metadata, 'chat_message_id'))->toBe($chatMessage->id);
+});
+
+test('chat api rejects task creation when chat_message_id does not belong to chat', function () {
+    [$user, $company, $token] = chatApiContext();
+
+    $chat = Chat::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'channel' => 'assistant',
+        'channel_chat_id' => 'assistant-task-invalid-1',
+        'channel_user_id' => 'assistant-user-task-invalid-1',
+        'name' => 'Create Task Lead Invalid',
+        'status' => Chat::STATUS_OPEN,
+        'metadata' => [],
+    ]);
+
+    $otherChat = Chat::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'channel' => 'assistant',
+        'channel_chat_id' => 'assistant-task-invalid-2',
+        'channel_user_id' => 'assistant-user-task-invalid-2',
+        'name' => 'Other chat',
+        'status' => Chat::STATUS_OPEN,
+        'metadata' => [],
+    ]);
+
+    $foreignMessage = ChatMessage::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'chat_id' => $otherChat->id,
+        'sender_type' => ChatMessage::SENDER_CUSTOMER,
+        'direction' => ChatMessage::DIRECTION_INBOUND,
+        'status' => 'received',
+        'message_type' => ChatMessage::TYPE_TEXT,
+        'text' => 'Foreign message',
+        'sent_at' => now()->subMinute(),
+    ]);
+
+    $this
+        ->withHeader('Authorization', "Bearer {$token}")
+        ->postJson('/api/chats/'.$chat->id.'/tasks', [
+            'description' => 'Should fail',
+            'chat_message_id' => $foreignMessage->id,
+        ])
+        ->assertStatus(422)
+        ->assertJsonPath('message', 'chat_message_id is invalid for this chat.');
+});
+
+test('chat api can create order from chat and link it in metadata', function () {
+    [$user, $company, $token] = chatApiContext();
+
+    $chat = Chat::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'channel' => 'assistant',
+        'channel_chat_id' => 'assistant-order-1',
+        'channel_user_id' => 'assistant-user-order-1',
+        'name' => 'Create Order Lead',
+        'status' => Chat::STATUS_OPEN,
+        'metadata' => [],
+    ]);
+
+    $chatMessage = ChatMessage::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'chat_id' => $chat->id,
+        'sender_type' => ChatMessage::SENDER_CUSTOMER,
+        'direction' => ChatMessage::DIRECTION_INBOUND,
+        'status' => 'received',
+        'message_type' => ChatMessage::TYPE_TEXT,
+        'text' => 'Need order',
+        'sent_at' => now()->subMinute(),
+    ]);
+
+    $response = $this
+        ->withHeader('Authorization', "Bearer {$token}")
+        ->postJson('/api/chats/'.$chat->id.'/orders', [
+            'phone' => '+992900111222',
+            'service_name' => 'Premium consultation',
+            'address' => 'Dushanbe',
+            'amount' => 120.50,
+            'note' => 'Call before arrival',
+            'chat_message_id' => $chatMessage->id,
+        ])
+        ->assertCreated()
+        ->json();
+
+    expect($response['order']['type'])->toBe('order');
+    expect((int) ($response['order']['chat_message_id'] ?? 0))->toBe($chatMessage->id);
+
+    $this->assertDatabaseHas('company_client_orders', [
+        'company_id' => $company->id,
+        'service_name' => 'Premium consultation',
+        'currency' => 'TJS',
+    ]);
+
+    $order = CompanyClientOrder::query()
+        ->where('company_id', $company->id)
+        ->where('service_name', 'Premium consultation')
+        ->latest('id')
+        ->first();
+
+    expect($order)->not->toBeNull();
+    expect((int) data_get($order?->metadata, 'chat_id'))->toBe($chat->id);
+    expect((int) data_get($order?->metadata, 'chat_message_id'))->toBe($chatMessage->id);
 });

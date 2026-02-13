@@ -8,6 +8,10 @@ use App\Models\AssistantChannel;
 use App\Models\Chat;
 use App\Models\ChatMessage;
 use App\Models\Company;
+use App\Models\CompanyClient;
+use App\Models\CompanyClientOrder;
+use App\Models\CompanyClientQuestion;
+use App\Models\CompanyClientTask;
 use App\Models\User;
 use App\Services\CompanySubscriptionService;
 use Illuminate\Http\JsonResponse;
@@ -144,6 +148,210 @@ class ChatController extends Controller
                 ->values(),
             'assistants' => $assistants,
             'subscription' => $this->subscriptionPayload($company),
+        ]);
+    }
+
+    public function insights(Request $request, int $chatId): JsonResponse
+    {
+        $user = $this->resolveUser($request);
+        $company = $this->resolveCompany($user);
+        $chat = $this->resolveChat($company, $chatId);
+        $client = $this->resolveLinkedClient($company, $chat);
+
+        return response()->json([
+            'chat' => $this->chatPayload($chat),
+            'client' => $client
+                ? [
+                    'id' => $client->id,
+                    'name' => $client->name,
+                    'status' => $client->status,
+                ]
+                : null,
+            'contacts' => $this->chatContactsPayload($chat, $client),
+            'history' => $this->chatHistoryPayload($company, $chat, $client),
+        ]);
+    }
+
+    public function createTask(Request $request, int $chatId): JsonResponse
+    {
+        $validated = $request->validate([
+            'description' => ['nullable', 'string', 'max:2000'],
+            'chat_message_id' => ['nullable', 'integer'],
+            'priority' => ['nullable', 'string', 'in:low,normal,high,urgent'],
+        ]);
+
+        $user = $this->resolveUser($request);
+        $company = $this->resolveCompany($user);
+        $chat = $this->resolveChat($company, $chatId);
+        $chatMessageId = isset($validated['chat_message_id'])
+            ? (int) $validated['chat_message_id']
+            : null;
+
+        if (
+            $chatMessageId !== null
+            && ! $chat->messages()->whereKey($chatMessageId)->exists()
+        ) {
+            return response()->json([
+                'message' => 'chat_message_id is invalid for this chat.',
+            ], 422);
+        }
+
+        $client = $this->resolveOrCreateClientForChat($company, $chat);
+
+        $description = trim((string) ($validated['description'] ?? ''));
+        if ($description === '') {
+            $preview = trim((string) ($chat->last_message_preview ?? ''));
+            $base = 'Lead from chat #'.$chat->id;
+            $description = $preview !== '' ? $base.': '.$preview : $base;
+        }
+
+        $task = CompanyClientTask::query()->create([
+            'user_id' => $company->user_id,
+            'company_id' => $company->id,
+            'company_client_id' => $client->id,
+            'assistant_id' => $chat->assistant_id,
+            'description' => Str::limit($description, 2000, ''),
+            'status' => CompanyClientTask::STATUS_TODO,
+            'board_column' => 'todo',
+            'position' => 0,
+            'priority' => (string) ($validated['priority'] ?? CompanyClientTask::PRIORITY_NORMAL),
+            'sync_with_calendar' => true,
+            'metadata' => array_filter([
+                'source' => 'chat_info_panel',
+                'chat_id' => $chat->id,
+                'chat_message_id' => $chatMessageId,
+            ], static fn ($value): bool => $value !== null),
+        ]);
+
+        return response()->json([
+            'message' => 'Task created successfully.',
+            'task' => $this->taskHistoryItemPayload($task),
+            'client' => [
+                'id' => $client->id,
+                'name' => $client->name,
+                'status' => $client->status,
+            ],
+        ], 201);
+    }
+
+    public function createOrder(Request $request, int $chatId): JsonResponse
+    {
+        $validated = $request->validate([
+            'phone' => ['required', 'string', 'max:32'],
+            'service_name' => ['required', 'string', 'max:160'],
+            'address' => ['required', 'string', 'max:255'],
+            'amount' => ['nullable', 'numeric', 'min:0'],
+            'note' => ['nullable', 'string', 'max:2000'],
+            'chat_message_id' => ['nullable', 'integer'],
+        ]);
+
+        $user = $this->resolveUser($request);
+        $company = $this->resolveCompany($user);
+        $chat = $this->resolveChat($company, $chatId);
+        $chatMessageId = isset($validated['chat_message_id'])
+            ? (int) $validated['chat_message_id']
+            : null;
+
+        if (
+            $chatMessageId !== null
+            && ! $chat->messages()->whereKey($chatMessageId)->exists()
+        ) {
+            return response()->json([
+                'message' => 'chat_message_id is invalid for this chat.',
+            ], 422);
+        }
+
+        $phoneInput = trim((string) ($validated['phone'] ?? ''));
+        $serviceNameInput = trim((string) ($validated['service_name'] ?? ''));
+        $addressInput = trim((string) ($validated['address'] ?? ''));
+
+        if ($phoneInput === '' || $serviceNameInput === '' || $addressInput === '') {
+            return response()->json([
+                'message' => 'Phone, service_name and address are required.',
+            ], 422);
+        }
+
+        $client = $this->resolveOrCreateClientForChat($company, $chat);
+        $normalizedPhone = $this->normalizeClientPhone($phoneInput, $chat);
+
+        if ((string) $client->phone !== $normalizedPhone) {
+            $phoneBusy = $company->clients()
+                ->where('phone', $normalizedPhone)
+                ->whereKeyNot($client->id)
+                ->exists();
+
+            if ($phoneBusy) {
+                return response()->json([
+                    'message' => 'Phone is already linked to another client.',
+                ], 422);
+            }
+        }
+
+        $clientMetadata = is_array($client->metadata) ? $client->metadata : [];
+        $clientMetadata['address'] = $addressInput;
+
+        $client->forceFill([
+            'phone' => $normalizedPhone,
+            'metadata' => $clientMetadata,
+        ])->save();
+
+        $amount = isset($validated['amount'])
+            ? round((float) $validated['amount'], 2)
+            : 0.0;
+        $note = trim((string) ($validated['note'] ?? ''));
+
+        $order = CompanyClientOrder::query()->create([
+            'user_id' => $company->user_id,
+            'company_id' => $company->id,
+            'company_client_id' => $client->id,
+            'assistant_id' => $chat->assistant_id,
+            'service_name' => Str::limit($serviceNameInput, 160, ''),
+            'quantity' => 1,
+            'unit_price' => $amount,
+            'total_price' => $amount,
+            'currency' => 'TJS',
+            'ordered_at' => now(),
+            'notes' => $note !== '' ? Str::limit($note, 2000, '') : null,
+            'metadata' => array_filter([
+                'source' => 'chat_info_panel',
+                'chat_id' => $chat->id,
+                'chat_message_id' => $chatMessageId,
+                'address' => $addressInput,
+                'phone' => $normalizedPhone,
+            ], static fn ($value): bool => $value !== null),
+        ]);
+
+        return response()->json([
+            'message' => 'Order created successfully.',
+            'order' => $this->orderHistoryItemPayload($order),
+            'client' => [
+                'id' => $client->id,
+                'name' => $client->name,
+                'status' => $client->status,
+            ],
+            'contacts' => $this->chatContactsPayload($chat, $client),
+        ], 201);
+    }
+
+    public function updateAiEnabled(Request $request, int $chatId): JsonResponse
+    {
+        $validated = $request->validate([
+            'enabled' => ['required', 'boolean'],
+        ]);
+
+        $user = $this->resolveUser($request);
+        $company = $this->resolveCompany($user);
+        $chat = $this->resolveChat($company, $chatId);
+
+        $metadata = is_array($chat->metadata) ? $chat->metadata : [];
+        $metadata['is_active'] = (bool) $validated['enabled'];
+        $chat->forceFill([
+            'metadata' => $metadata,
+        ])->save();
+
+        return response()->json([
+            'message' => 'Chat AI state updated successfully.',
+            'chat' => $this->chatPayload($chat->refresh()),
         ]);
     }
 
@@ -624,6 +832,350 @@ class ChatController extends Controller
         }
 
         $chat->save();
+    }
+
+    private function resolveLinkedClient(Company $company, Chat $chat): ?CompanyClient
+    {
+        $metadata = is_array($chat->metadata) ? $chat->metadata : [];
+
+        $clientId = (int) ($metadata['company_client_id'] ?? 0);
+        if ($clientId > 0) {
+            $client = $company->clients()->whereKey($clientId)->first();
+
+            if ($client) {
+                return $client;
+            }
+        }
+
+        $channelUserId = trim((string) ($chat->channel_user_id ?? ''));
+        if ($channelUserId !== '') {
+            $client = $company->clients()
+                ->where(function ($builder) use ($channelUserId): void {
+                    $builder
+                        ->where('phone', $channelUserId)
+                        ->orWhere('email', $channelUserId);
+                })
+                ->first();
+
+            if ($client) {
+                return $client;
+            }
+        }
+
+        $metadataEmail = $this->extractChatMetadataEmail($metadata);
+        if ($metadataEmail !== null) {
+            $client = $company->clients()
+                ->where('email', $metadataEmail)
+                ->first();
+
+            if ($client) {
+                return $client;
+            }
+        }
+
+        return null;
+    }
+
+    private function resolveOrCreateClientForChat(Company $company, Chat $chat): CompanyClient
+    {
+        $existing = $this->resolveLinkedClient($company, $chat);
+
+        if ($existing) {
+            $this->bindChatToClient($chat, $existing);
+
+            return $existing;
+        }
+
+        $metadata = is_array($chat->metadata) ? $chat->metadata : [];
+        $email = $this->extractChatMetadataEmail($metadata);
+        $phoneCandidate = $this->extractChatMetadataPhone($metadata)
+            ?? $this->nullableTrimmedString($chat->channel_user_id);
+        $phone = $this->normalizeClientPhone($phoneCandidate, $chat);
+        $name = trim((string) ($chat->name ?? ''));
+
+        if ($name === '') {
+            $name = 'Client #'.$chat->id;
+        }
+
+        $client = CompanyClient::query()->create([
+            'user_id' => $company->user_id,
+            'company_id' => $company->id,
+            'name' => Str::limit($name, 160, ''),
+            'phone' => $phone,
+            'email' => $email,
+            'status' => CompanyClient::STATUS_ACTIVE,
+            'metadata' => [
+                'source_chat_id' => $chat->id,
+                'source_channel' => $chat->channel,
+                'source_channel_user_id' => $chat->channel_user_id,
+            ],
+        ]);
+
+        $this->bindChatToClient($chat, $client);
+
+        return $client;
+    }
+
+    private function bindChatToClient(Chat $chat, CompanyClient $client): void
+    {
+        $metadata = is_array($chat->metadata) ? $chat->metadata : [];
+        $metadata['company_client_id'] = (int) $client->id;
+
+        $chat->forceFill([
+            'metadata' => $metadata,
+        ])->save();
+    }
+
+    private function normalizeClientPhone(?string $phoneCandidate, Chat $chat): string
+    {
+        $phone = trim((string) ($phoneCandidate ?? ''));
+
+        if ($phone === '') {
+            return 'chat-'.$chat->id;
+        }
+
+        return Str::limit($phone, 32, '');
+    }
+
+    private function extractChatMetadataPhone(array $metadata): ?string
+    {
+        $candidates = [
+            $metadata['phone'] ?? null,
+            $metadata['client_phone'] ?? null,
+            data_get($metadata, 'contact.phone'),
+            data_get($metadata, 'contacts.phone'),
+        ];
+
+        foreach ($candidates as $candidate) {
+            if (is_string($candidate) && trim($candidate) !== '') {
+                return trim($candidate);
+            }
+        }
+
+        return null;
+    }
+
+    private function extractChatMetadataEmail(array $metadata): ?string
+    {
+        $candidates = [
+            $metadata['email'] ?? null,
+            $metadata['client_email'] ?? null,
+            data_get($metadata, 'contact.email'),
+            data_get($metadata, 'contacts.email'),
+        ];
+
+        foreach ($candidates as $candidate) {
+            if (! is_string($candidate)) {
+                continue;
+            }
+
+            $normalized = trim($candidate);
+            if ($normalized === '') {
+                continue;
+            }
+
+            if (filter_var($normalized, FILTER_VALIDATE_EMAIL)) {
+                return Str::limit($normalized, 191, '');
+            }
+        }
+
+        return null;
+    }
+
+    private function chatContactsPayload(Chat $chat, ?CompanyClient $client): array
+    {
+        $metadata = is_array($chat->metadata) ? $chat->metadata : [];
+        $items = [];
+
+        $phone = $client?->phone ?? $this->extractChatMetadataPhone($metadata);
+        if (is_string($phone) && trim($phone) !== '') {
+            $items[] = [
+                'key' => 'phone',
+                'label' => 'Phone',
+                'value' => trim($phone),
+            ];
+        }
+
+        $email = $client?->email ?? $this->extractChatMetadataEmail($metadata);
+        if (is_string($email) && trim($email) !== '') {
+            $items[] = [
+                'key' => 'email',
+                'label' => 'Email',
+                'value' => trim($email),
+            ];
+        }
+
+        $address = $this->firstNonEmptyString([
+            $client && is_array($client->metadata) ? ($client->metadata['address'] ?? null) : null,
+            $metadata['address'] ?? null,
+            data_get($metadata, 'contact.address'),
+            data_get($metadata, 'contacts.address'),
+        ]);
+        if ($address !== null) {
+            $items[] = [
+                'key' => 'address',
+                'label' => 'Address',
+                'value' => $address,
+            ];
+        }
+
+        return $items;
+    }
+
+    private function chatHistoryPayload(Company $company, Chat $chat, ?CompanyClient $client): array
+    {
+        $chatId = (int) $chat->id;
+        $items = collect();
+
+        $tasks = $company->clientTasks()
+            ->when($client !== null, fn ($query) => $query->where('company_client_id', $client->id))
+            ->orderByDesc('created_at')
+            ->limit(120)
+            ->get();
+
+        $tasks
+            ->filter(fn (CompanyClientTask $task): bool => $this->metadataHasChatLink($task->metadata, $chatId))
+            ->each(function (CompanyClientTask $task) use ($items): void {
+                $items->push($this->taskHistoryItemPayload($task));
+            });
+
+        $questions = $company->clientQuestions()
+            ->when($client !== null, fn ($query) => $query->where('company_client_id', $client->id))
+            ->orderByDesc('created_at')
+            ->limit(120)
+            ->get();
+
+        $questions
+            ->filter(fn (CompanyClientQuestion $question): bool => $this->metadataHasChatLink($question->metadata, $chatId))
+            ->each(function (CompanyClientQuestion $question) use ($items): void {
+                $items->push($this->questionHistoryItemPayload($question));
+            });
+
+        $orders = $company->clientOrders()
+            ->when($client !== null, fn ($query) => $query->where('company_client_id', $client->id))
+            ->orderByDesc('ordered_at')
+            ->orderByDesc('created_at')
+            ->limit(120)
+            ->get();
+
+        $orders
+            ->filter(fn (CompanyClientOrder $order): bool => $this->metadataHasChatLink($order->metadata, $chatId))
+            ->each(function (CompanyClientOrder $order) use ($items): void {
+                $items->push($this->orderHistoryItemPayload($order));
+            });
+
+        return $items
+            ->sortByDesc(fn (array $item) => (string) ($item['created_at'] ?? ''))
+            ->values()
+            ->all();
+    }
+
+    private function taskHistoryItemPayload(CompanyClientTask $task): array
+    {
+        return [
+            'id' => 'task-'.$task->id,
+            'record_id' => $task->id,
+            'type' => 'task',
+            'title' => Str::limit((string) $task->description, 220, '...'),
+            'status' => $task->status,
+            'created_at' => $task->created_at?->toIso8601String(),
+            'chat_message_id' => $this->extractChatMessageIdFromMetadata($task->metadata),
+        ];
+    }
+
+    private function questionHistoryItemPayload(CompanyClientQuestion $question): array
+    {
+        return [
+            'id' => 'question-'.$question->id,
+            'record_id' => $question->id,
+            'type' => 'question',
+            'title' => Str::limit((string) $question->description, 220, '...'),
+            'status' => $question->status,
+            'created_at' => $question->created_at?->toIso8601String(),
+            'chat_message_id' => $this->extractChatMessageIdFromMetadata($question->metadata),
+        ];
+    }
+
+    private function orderHistoryItemPayload(CompanyClientOrder $order): array
+    {
+        $title = trim((string) ($order->service_name ?? ''));
+        if ($title === '') {
+            $title = 'Order #'.$order->id;
+        }
+
+        return [
+            'id' => 'order-'.$order->id,
+            'record_id' => $order->id,
+            'type' => 'order',
+            'title' => Str::limit($title, 220, '...'),
+            'status' => 'created',
+            'created_at' => ($order->ordered_at ?? $order->created_at)?->toIso8601String(),
+            'chat_message_id' => $this->extractChatMessageIdFromMetadata($order->metadata),
+        ];
+    }
+
+    private function metadataHasChatLink(mixed $metadata, int $chatId): bool
+    {
+        if (! is_array($metadata)) {
+            return false;
+        }
+
+        $candidates = [
+            data_get($metadata, 'chat_id'),
+            data_get($metadata, 'source_chat_id'),
+            data_get($metadata, 'chat.id'),
+            data_get($metadata, 'source.chat_id'),
+        ];
+
+        foreach ($candidates as $value) {
+            if (is_numeric($value) && (int) $value === $chatId) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function extractChatMessageIdFromMetadata(mixed $metadata): ?int
+    {
+        if (! is_array($metadata)) {
+            return null;
+        }
+
+        $candidates = [
+            data_get($metadata, 'chat_message_id'),
+            data_get($metadata, 'message_id'),
+            data_get($metadata, 'chat.message_id'),
+            data_get($metadata, 'source.chat_message_id'),
+        ];
+
+        foreach ($candidates as $value) {
+            if (is_numeric($value)) {
+                $normalized = (int) $value;
+
+                if ($normalized > 0) {
+                    return $normalized;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private function firstNonEmptyString(array $candidates): ?string
+    {
+        foreach ($candidates as $candidate) {
+            if (! is_string($candidate)) {
+                continue;
+            }
+
+            $normalized = trim($candidate);
+            if ($normalized !== '') {
+                return $normalized;
+            }
+        }
+
+        return null;
     }
 
     private function extractWebhookPayload(Request $request): array

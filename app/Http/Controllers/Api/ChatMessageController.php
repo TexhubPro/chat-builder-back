@@ -14,6 +14,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use TexHub\OpenAi\Assistant as OpenAiAssistantClient;
 use Throwable;
@@ -187,6 +188,12 @@ class ChatMessageController extends Controller
         $company = $this->resolveCompany($user);
         $chat = $this->resolveChat($company, $chatId);
 
+        if (! $this->isChatActiveForAutoReply($chat)) {
+            return response()->json([
+                'message' => 'AI replies are disabled for this chat.',
+            ], 422);
+        }
+
         $assistant = $this->resolveAssistantForReply(
             $company,
             $chat,
@@ -326,22 +333,11 @@ class ChatMessageController extends Controller
         $threadId = trim((string) ($threadMap[$threadKey] ?? ''));
 
         if ($threadId === '') {
-            $threadId = (string) ($this->openAiClient()->createThread([], [
-                'chat_id' => (string) $chat->id,
-                'company_id' => (string) $chat->company_id,
-                'assistant_id' => (string) $assistant->id,
-            ]) ?? '');
+            $threadId = $this->createAndPersistOpenAiThread($chat, $assistant, $chatMetadata, $threadMap, $threadKey);
 
-            if ($threadId === '') {
+            if ($threadId === null) {
                 return $this->fallbackAssistantText($assistant, $prompt);
             }
-
-            $threadMap[$threadKey] = $threadId;
-            $chatMetadata['openai_threads'] = $threadMap;
-
-            $chat->forceFill([
-                'metadata' => $chatMetadata,
-            ])->save();
         }
 
         $messageId = $this->sendIncomingMessageToOpenAiThread(
@@ -354,22 +350,66 @@ class ChatMessageController extends Controller
         );
 
         if (! is_string($messageId) || trim($messageId) === '') {
+            $recoveryThreadId = $this->createAndPersistOpenAiThread($chat, $assistant, $chatMetadata, $threadMap, $threadKey);
+
+            if ($recoveryThreadId !== null) {
+                $messageId = $this->sendIncomingMessageToOpenAiThread(
+                    $recoveryThreadId,
+                    $assistant,
+                    $chat,
+                    $prompt,
+                    $incomingMessage,
+                    $uploadedAbsolutePath,
+                );
+
+                if (is_string($messageId) && trim($messageId) !== '') {
+                    $threadId = $recoveryThreadId;
+                }
+            }
+        }
+
+        if (! is_string($messageId) || trim($messageId) === '') {
+            $this->logAssistantFallback('OpenAI message send failed', [
+                'assistant_id' => $assistant->id,
+                'chat_id' => $chat->id,
+            ]);
             return $this->fallbackAssistantText($assistant, $prompt);
         }
 
-        $responseText = $this->openAiClient()->runThreadAndGetResponse(
-            $threadId,
-            $openAiAssistantId,
-            [],
-            20,
-            900
-        );
+        $normalized = $this->runAssistantThread($threadId, $openAiAssistantId);
 
-        $normalized = trim((string) ($responseText ?? ''));
+        if ($normalized !== '') {
+            return $normalized;
+        }
 
-        return $normalized !== ''
-            ? $normalized
-            : $this->fallbackAssistantText($assistant, $prompt);
+        $recoveryThreadId = $this->createAndPersistOpenAiThread($chat, $assistant, $chatMetadata, $threadMap, $threadKey);
+
+        if ($recoveryThreadId !== null) {
+            $retryMessageId = $this->sendIncomingMessageToOpenAiThread(
+                $recoveryThreadId,
+                $assistant,
+                $chat,
+                $prompt,
+                $incomingMessage,
+                $uploadedAbsolutePath,
+            );
+
+            if (is_string($retryMessageId) && trim($retryMessageId) !== '') {
+                $retryNormalized = $this->runAssistantThread($recoveryThreadId, $openAiAssistantId);
+
+                if ($retryNormalized !== '') {
+                    return $retryNormalized;
+                }
+            }
+        }
+
+        $this->logAssistantFallback('OpenAI run did not return a response after retry', [
+            'assistant_id' => $assistant->id,
+            'chat_id' => $chat->id,
+            'thread_id' => $threadId,
+        ]);
+
+        return $this->fallbackAssistantText($assistant, $prompt);
     }
 
     private function fallbackAssistantText(AssistantModel $assistant, string $prompt): string
@@ -377,6 +417,73 @@ class ChatMessageController extends Controller
         $safePrompt = Str::limit(trim($prompt), 220, '...');
 
         return "[$assistant->name] Received: {$safePrompt}";
+    }
+
+    private function createAndPersistOpenAiThread(
+        Chat $chat,
+        AssistantModel $assistant,
+        array &$chatMetadata,
+        array &$threadMap,
+        string $threadKey,
+    ): ?string {
+        try {
+            $threadId = (string) ($this->openAiClient()->createThread([], [
+                'chat_id' => (string) $chat->id,
+                'company_id' => (string) $chat->company_id,
+                'assistant_id' => (string) $assistant->id,
+            ]) ?? '');
+        } catch (Throwable $exception) {
+            $this->logAssistantFallback('OpenAI thread creation failed', [
+                'assistant_id' => $assistant->id,
+                'chat_id' => $chat->id,
+                'exception' => $exception->getMessage(),
+            ]);
+
+            return null;
+        }
+
+        $threadId = trim($threadId);
+
+        if ($threadId === '') {
+            return null;
+        }
+
+        $threadMap[$threadKey] = $threadId;
+        $chatMetadata['openai_threads'] = $threadMap;
+
+        $chat->forceFill([
+            'metadata' => $chatMetadata,
+        ])->save();
+
+        return $threadId;
+    }
+
+    private function runAssistantThread(string $threadId, string $openAiAssistantId): string
+    {
+        try {
+            $responseText = $this->openAiClient()->runThreadAndGetResponse(
+                $threadId,
+                $openAiAssistantId,
+                [],
+                20,
+                900
+            );
+        } catch (Throwable $exception) {
+            $this->logAssistantFallback('OpenAI run failed with exception', [
+                'thread_id' => $threadId,
+                'assistant_openai_id' => $openAiAssistantId,
+                'exception' => $exception->getMessage(),
+            ]);
+
+            return '';
+        }
+
+        return trim((string) ($responseText ?? ''));
+    }
+
+    private function logAssistantFallback(string $message, array $context = []): void
+    {
+        Log::warning($message, $context);
     }
 
     private function resolveUser(Request $request): User
