@@ -30,6 +30,12 @@ test('company settings api returns default company profile and settings', functi
     expect($response['company']['settings']['appointment']['enabled'])->toBeFalse();
     expect($response['company']['settings']['appointment']['slot_minutes'])->toBe(30);
     expect($response['company']['settings']['business']['timezone'])->not->toBe('');
+    expect($response['company']['settings']['business']['schedule']['monday']['is_day_off'])->toBeFalse();
+    expect($response['company']['settings']['business']['schedule']['monday']['start_time'])->toBe('09:00');
+    expect($response['company']['settings']['business']['schedule']['monday']['end_time'])->toBe('18:00');
+    expect($response['company']['settings']['business']['schedule']['sunday']['is_day_off'])->toBeTrue();
+    expect($response['company']['settings']['business']['schedule']['sunday']['start_time'])->toBeNull();
+    expect($response['company']['settings']['business']['schedule']['sunday']['end_time'])->toBeNull();
 });
 
 test('company settings api updates company data and appointment settings', function () {
@@ -53,7 +59,15 @@ test('company settings api updates company data and appointment settings', funct
             'business' => [
                 'address' => 'Dushanbe, Rudaki 12',
                 'timezone' => 'Asia/Dushanbe',
-                'working_hours' => 'Mon-Sat 09:00-19:00',
+                'schedule' => [
+                    'monday' => ['is_day_off' => false, 'start_time' => '08:30', 'end_time' => '18:30'],
+                    'tuesday' => ['is_day_off' => false, 'start_time' => '09:00', 'end_time' => '18:00'],
+                    'wednesday' => ['is_day_off' => false, 'start_time' => '09:00', 'end_time' => '18:00'],
+                    'thursday' => ['is_day_off' => false, 'start_time' => '09:00', 'end_time' => '18:00'],
+                    'friday' => ['is_day_off' => false, 'start_time' => '09:00', 'end_time' => '18:00'],
+                    'saturday' => ['is_day_off' => false, 'start_time' => '10:00', 'end_time' => '16:00'],
+                    'sunday' => ['is_day_off' => true],
+                ],
             ],
             'appointment' => [
                 'slot_minutes' => 45,
@@ -81,6 +95,15 @@ test('company settings api updates company data and appointment settings', funct
     expect($response['company']['settings']['appointment']['auto_confirm'])->toBeFalse();
     expect($response['company']['settings']['appointment']['require_phone'])->toBeTrue();
     expect($response['company']['settings']['business']['timezone'])->toBe('Asia/Dushanbe');
+    expect($response['company']['settings']['business']['schedule']['monday']['is_day_off'])->toBeFalse();
+    expect($response['company']['settings']['business']['schedule']['monday']['start_time'])->toBe('08:30');
+    expect($response['company']['settings']['business']['schedule']['monday']['end_time'])->toBe('18:30');
+    expect($response['company']['settings']['business']['schedule']['saturday']['is_day_off'])->toBeFalse();
+    expect($response['company']['settings']['business']['schedule']['saturday']['start_time'])->toBe('10:00');
+    expect($response['company']['settings']['business']['schedule']['saturday']['end_time'])->toBe('16:00');
+    expect($response['company']['settings']['business']['schedule']['sunday']['is_day_off'])->toBeTrue();
+    expect($response['company']['settings']['business']['schedule']['sunday']['start_time'])->toBeNull();
+    expect($response['company']['settings']['business']['schedule']['sunday']['end_time'])->toBeNull();
 });
 
 test('company settings api validates account type', function () {
@@ -101,4 +124,3 @@ test('company settings api validates account type', function () {
         ])
         ->assertStatus(422);
 });
-

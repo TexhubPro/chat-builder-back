@@ -14,6 +14,15 @@ class CompanyController extends Controller
 {
     private const ACCOUNT_TYPE_WITH_APPOINTMENTS = 'with_appointments';
     private const ACCOUNT_TYPE_WITHOUT_APPOINTMENTS = 'without_appointments';
+    private const WEEK_DAYS = [
+        'monday',
+        'tuesday',
+        'wednesday',
+        'thursday',
+        'friday',
+        'saturday',
+        'sunday',
+    ];
 
     public function show(Request $request): JsonResponse
     {
@@ -27,7 +36,7 @@ class CompanyController extends Controller
 
     public function update(Request $request): JsonResponse
     {
-        $validated = $request->validate([
+        $rules = [
             'name' => ['required', 'string', 'min:2', 'max:160'],
             'short_description' => ['nullable', 'string', 'max:1000'],
             'industry' => ['nullable', 'string', 'max:120'],
@@ -51,14 +60,23 @@ class CompanyController extends Controller
                 'string',
                 Rule::in(timezone_identifiers_list()),
             ],
-            'settings.business.working_hours' => ['nullable', 'string', 'max:255'],
+            'settings.business.schedule' => ['nullable', 'array'],
             'settings.appointment' => ['nullable', 'array'],
             'settings.appointment.slot_minutes' => ['nullable', 'integer', Rule::in([15, 30, 45, 60, 90, 120])],
             'settings.appointment.buffer_minutes' => ['nullable', 'integer', 'min:0', 'max:120'],
             'settings.appointment.max_days_ahead' => ['nullable', 'integer', 'min:1', 'max:365'],
             'settings.appointment.auto_confirm' => ['nullable', 'boolean'],
             'settings.appointment.require_phone' => ['nullable', 'boolean'],
-        ]);
+        ];
+
+        foreach (self::WEEK_DAYS as $day) {
+            $rules["settings.business.schedule.{$day}"] = ['nullable', 'array'];
+            $rules["settings.business.schedule.{$day}.is_day_off"] = ['nullable', 'boolean'];
+            $rules["settings.business.schedule.{$day}.start_time"] = ['nullable', 'date_format:H:i'];
+            $rules["settings.business.schedule.{$day}.end_time"] = ['nullable', 'date_format:H:i'];
+        }
+
+        $validated = $request->validate($rules);
 
         $user = $this->resolveUser($request);
         $company = $this->resolveCompany($user);
@@ -113,7 +131,7 @@ class CompanyController extends Controller
             'business' => [
                 'address' => null,
                 'timezone' => (string) config('app.timezone', 'UTC'),
-                'working_hours' => null,
+                'schedule' => $this->defaultBusinessSchedule(),
             ],
             'appointment' => [
                 'enabled' => false,
@@ -148,8 +166,11 @@ class CompanyController extends Controller
         }
 
         $settings['business']['address'] = $this->nullableTrimmed($settings['business']['address'] ?? null);
-        $settings['business']['working_hours'] = $this->nullableTrimmed($settings['business']['working_hours'] ?? null);
         $settings['business']['timezone'] = $this->normalizedTimezone($settings['business']['timezone'] ?? null);
+        $settings['business']['schedule'] = $this->normalizeBusinessSchedule(
+            $settings['business']['schedule'] ?? [],
+            $defaults['business']['schedule'],
+        );
 
         $settings['appointment']['enabled'] = $hasAppointments;
         $settings['appointment']['slot_minutes'] = (int) ($settings['appointment']['slot_minutes'] ?? 30);
@@ -185,6 +206,92 @@ class CompanyController extends Controller
         }
 
         return $timezone;
+    }
+
+    private function defaultBusinessSchedule(): array
+    {
+        return [
+            'monday' => ['is_day_off' => false, 'start_time' => '09:00', 'end_time' => '18:00'],
+            'tuesday' => ['is_day_off' => false, 'start_time' => '09:00', 'end_time' => '18:00'],
+            'wednesday' => ['is_day_off' => false, 'start_time' => '09:00', 'end_time' => '18:00'],
+            'thursday' => ['is_day_off' => false, 'start_time' => '09:00', 'end_time' => '18:00'],
+            'friday' => ['is_day_off' => false, 'start_time' => '09:00', 'end_time' => '18:00'],
+            'saturday' => ['is_day_off' => true, 'start_time' => null, 'end_time' => null],
+            'sunday' => ['is_day_off' => true, 'start_time' => null, 'end_time' => null],
+        ];
+    }
+
+    private function normalizeBusinessSchedule(mixed $schedule, array $defaults): array
+    {
+        $rawSchedule = is_array($schedule) ? $schedule : [];
+        $normalized = [];
+
+        foreach (self::WEEK_DAYS as $day) {
+            $rawDay = is_array($rawSchedule[$day] ?? null) ? $rawSchedule[$day] : [];
+            $defaultDay = is_array($defaults[$day] ?? null) ? $defaults[$day] : [
+                'is_day_off' => true,
+                'start_time' => null,
+                'end_time' => null,
+            ];
+
+            $isDayOff = (bool) ($rawDay['is_day_off'] ?? $defaultDay['is_day_off']);
+            $startTime = $this->normalizeTime($rawDay['start_time'] ?? $defaultDay['start_time']);
+            $endTime = $this->normalizeTime($rawDay['end_time'] ?? $defaultDay['end_time']);
+
+            if ($isDayOff) {
+                $normalized[$day] = [
+                    'is_day_off' => true,
+                    'start_time' => null,
+                    'end_time' => null,
+                ];
+
+                continue;
+            }
+
+            $fallbackStart = $this->normalizeTime($defaultDay['start_time'] ?? '09:00') ?? '09:00';
+            $fallbackEnd = $this->normalizeTime($defaultDay['end_time'] ?? '18:00') ?? '18:00';
+            $resolvedStart = $startTime ?? $fallbackStart;
+            $resolvedEnd = $endTime ?? $fallbackEnd;
+
+            if (! $this->isValidTimeRange($resolvedStart, $resolvedEnd)) {
+                $resolvedStart = $fallbackStart;
+                $resolvedEnd = $fallbackEnd;
+            }
+
+            $normalized[$day] = [
+                'is_day_off' => false,
+                'start_time' => $resolvedStart,
+                'end_time' => $resolvedEnd,
+            ];
+        }
+
+        return $normalized;
+    }
+
+    private function normalizeTime(mixed $value): ?string
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $time = trim($value);
+
+        if ($time === '' || ! preg_match('/^(?:[01]\d|2[0-3]):[0-5]\d$/', $time)) {
+            return null;
+        }
+
+        return $time;
+    }
+
+    private function isValidTimeRange(string $startTime, string $endTime): bool
+    {
+        [$startHour, $startMinute] = array_map('intval', explode(':', $startTime));
+        [$endHour, $endMinute] = array_map('intval', explode(':', $endTime));
+
+        $start = ($startHour * 60) + $startMinute;
+        $end = ($endHour * 60) + $endMinute;
+
+        return $end > $start;
     }
 
     private function companyPayload(?Company $company): ?array
