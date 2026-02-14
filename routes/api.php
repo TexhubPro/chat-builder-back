@@ -5,6 +5,7 @@ use App\Http\Controllers\Api\AssistantChannelController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\ChatController;
 use App\Http\Controllers\Api\ChatMessageController;
+use App\Http\Controllers\Api\CompanyController;
 use App\Http\Controllers\Api\CompanySubscriptionController;
 use App\Http\Controllers\Api\InstagramIntegrationController;
 use App\Http\Controllers\Api\InvoiceController;
@@ -41,6 +42,13 @@ Route::prefix('billing')
         Route::post('/checkout', [CompanySubscriptionController::class, 'checkout']);
         Route::get('/invoices', [InvoiceController::class, 'index']);
         Route::post('/invoices/{invoice}/pay', [InvoiceController::class, 'pay']);
+    });
+
+Route::prefix('company')
+    ->middleware([EnsureUserIsActive::class])
+    ->group(function (): void {
+        Route::get('/settings', [CompanyController::class, 'show']);
+        Route::put('/settings', [CompanyController::class, 'update']);
     });
 
 Route::post('/billing/alif/callback', [InvoiceController::class, 'alifCallback'])

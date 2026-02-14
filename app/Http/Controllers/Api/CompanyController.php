@@ -3,7 +3,218 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\Company;
+use App\Models\User;
+use App\Services\CompanySubscriptionService;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 
 class CompanyController extends Controller
 {
+    private const ACCOUNT_TYPE_WITH_APPOINTMENTS = 'with_appointments';
+    private const ACCOUNT_TYPE_WITHOUT_APPOINTMENTS = 'without_appointments';
+
+    public function show(Request $request): JsonResponse
+    {
+        $user = $this->resolveUser($request);
+        $company = $this->resolveCompany($user);
+
+        return response()->json([
+            'company' => $this->companyPayload($company),
+        ]);
+    }
+
+    public function update(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'name' => ['required', 'string', 'min:2', 'max:160'],
+            'short_description' => ['nullable', 'string', 'max:1000'],
+            'industry' => ['nullable', 'string', 'max:120'],
+            'primary_goal' => ['nullable', 'string', 'max:1000'],
+            'contact_email' => ['nullable', 'email', 'max:255'],
+            'contact_phone' => ['nullable', 'string', 'max:32', 'regex:/^[0-9+\\-\\s()]{5,32}$/'],
+            'website' => ['nullable', 'url:http,https', 'max:2048'],
+            'settings' => ['required', 'array'],
+            'settings.account_type' => [
+                'required',
+                'string',
+                Rule::in([
+                    self::ACCOUNT_TYPE_WITH_APPOINTMENTS,
+                    self::ACCOUNT_TYPE_WITHOUT_APPOINTMENTS,
+                ]),
+            ],
+            'settings.business' => ['nullable', 'array'],
+            'settings.business.address' => ['nullable', 'string', 'max:255'],
+            'settings.business.timezone' => [
+                'nullable',
+                'string',
+                Rule::in(timezone_identifiers_list()),
+            ],
+            'settings.business.working_hours' => ['nullable', 'string', 'max:255'],
+            'settings.appointment' => ['nullable', 'array'],
+            'settings.appointment.slot_minutes' => ['nullable', 'integer', Rule::in([15, 30, 45, 60, 90, 120])],
+            'settings.appointment.buffer_minutes' => ['nullable', 'integer', 'min:0', 'max:120'],
+            'settings.appointment.max_days_ahead' => ['nullable', 'integer', 'min:1', 'max:365'],
+            'settings.appointment.auto_confirm' => ['nullable', 'boolean'],
+            'settings.appointment.require_phone' => ['nullable', 'boolean'],
+        ]);
+
+        $user = $this->resolveUser($request);
+        $company = $this->resolveCompany($user);
+
+        $name = trim((string) $validated['name']);
+        $shortDescription = $this->nullableTrimmed($validated['short_description'] ?? null);
+        $industry = $this->nullableTrimmed($validated['industry'] ?? null);
+        $primaryGoal = $this->nullableTrimmed($validated['primary_goal'] ?? null);
+        $contactEmail = $this->nullableTrimmed($validated['contact_email'] ?? null);
+        $contactPhone = $this->nullableTrimmed($validated['contact_phone'] ?? null);
+        $website = $this->nullableTrimmed($validated['website'] ?? null);
+
+        $settings = $this->normalizeSettings(
+            is_array($company->settings) ? $company->settings : [],
+            is_array($validated['settings'] ?? null) ? $validated['settings'] : [],
+        );
+
+        $company->forceFill([
+            'name' => $name,
+            'short_description' => $shortDescription,
+            'industry' => $industry,
+            'primary_goal' => $primaryGoal,
+            'contact_email' => $contactEmail,
+            'contact_phone' => $contactPhone,
+            'website' => $website,
+            'settings' => $settings,
+        ])->save();
+
+        return response()->json([
+            'message' => 'Company settings updated successfully.',
+            'company' => $this->companyPayload($company->fresh()),
+        ]);
+    }
+
+    private function resolveUser(Request $request): User
+    {
+        /** @var User $user */
+        $user = $request->user();
+
+        return $user;
+    }
+
+    private function resolveCompany(User $user): Company
+    {
+        return $this->subscriptionService()->provisionDefaultWorkspaceForUser($user->id, $user->name);
+    }
+
+    private function defaultSettings(): array
+    {
+        return [
+            'account_type' => self::ACCOUNT_TYPE_WITHOUT_APPOINTMENTS,
+            'business' => [
+                'address' => null,
+                'timezone' => (string) config('app.timezone', 'UTC'),
+                'working_hours' => null,
+            ],
+            'appointment' => [
+                'enabled' => false,
+                'slot_minutes' => 30,
+                'buffer_minutes' => 0,
+                'max_days_ahead' => 30,
+                'auto_confirm' => true,
+                'require_phone' => true,
+            ],
+        ];
+    }
+
+    private function normalizeSettings(array $existing, array $incoming): array
+    {
+        $defaults = $this->defaultSettings();
+        $settings = array_replace_recursive($defaults, $existing);
+        $settings = array_replace_recursive($settings, $incoming);
+
+        $accountType = (string) ($settings['account_type'] ?? self::ACCOUNT_TYPE_WITHOUT_APPOINTMENTS);
+        $hasAppointments = $accountType === self::ACCOUNT_TYPE_WITH_APPOINTMENTS;
+
+        $settings['account_type'] = $hasAppointments
+            ? self::ACCOUNT_TYPE_WITH_APPOINTMENTS
+            : self::ACCOUNT_TYPE_WITHOUT_APPOINTMENTS;
+
+        if (! is_array($settings['business'] ?? null)) {
+            $settings['business'] = $defaults['business'];
+        }
+
+        if (! is_array($settings['appointment'] ?? null)) {
+            $settings['appointment'] = $defaults['appointment'];
+        }
+
+        $settings['business']['address'] = $this->nullableTrimmed($settings['business']['address'] ?? null);
+        $settings['business']['working_hours'] = $this->nullableTrimmed($settings['business']['working_hours'] ?? null);
+        $settings['business']['timezone'] = $this->normalizedTimezone($settings['business']['timezone'] ?? null);
+
+        $settings['appointment']['enabled'] = $hasAppointments;
+        $settings['appointment']['slot_minutes'] = (int) ($settings['appointment']['slot_minutes'] ?? 30);
+        $settings['appointment']['buffer_minutes'] = (int) ($settings['appointment']['buffer_minutes'] ?? 0);
+        $settings['appointment']['max_days_ahead'] = (int) ($settings['appointment']['max_days_ahead'] ?? 30);
+        $settings['appointment']['auto_confirm'] = (bool) ($settings['appointment']['auto_confirm'] ?? true);
+        $settings['appointment']['require_phone'] = (bool) ($settings['appointment']['require_phone'] ?? true);
+
+        return $settings;
+    }
+
+    private function nullableTrimmed(mixed $value): ?string
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $trimmed = trim($value);
+
+        return $trimmed === '' ? null : $trimmed;
+    }
+
+    private function normalizedTimezone(mixed $value): string
+    {
+        $timezone = $this->nullableTrimmed($value);
+
+        if ($timezone === null) {
+            return (string) config('app.timezone', 'UTC');
+        }
+
+        if (! in_array($timezone, timezone_identifiers_list(), true)) {
+            return (string) config('app.timezone', 'UTC');
+        }
+
+        return $timezone;
+    }
+
+    private function companyPayload(?Company $company): ?array
+    {
+        if (! $company) {
+            return null;
+        }
+
+        return [
+            'id' => (int) $company->id,
+            'name' => (string) $company->name,
+            'slug' => $company->slug,
+            'short_description' => $company->short_description,
+            'industry' => $company->industry,
+            'primary_goal' => $company->primary_goal,
+            'contact_email' => $company->contact_email,
+            'contact_phone' => $company->contact_phone,
+            'website' => $company->website,
+            'status' => $company->status,
+            'settings' => $this->normalizeSettings(
+                is_array($company->settings) ? $company->settings : [],
+                [],
+            ),
+            'updated_at' => $company->updated_at?->toIso8601String(),
+            'created_at' => $company->created_at?->toIso8601String(),
+        ];
+    }
+
+    private function subscriptionService(): CompanySubscriptionService
+    {
+        return app(CompanySubscriptionService::class);
+    }
 }
