@@ -10,6 +10,10 @@ class CompanyClientOrder extends Model
 {
     use HasFactory;
 
+    public const STATUS_NEW = 'new';
+    public const STATUS_IN_PROGRESS = 'in_progress';
+    public const STATUS_COMPLETED = 'completed';
+
     protected $fillable = [
         'user_id',
         'company_id',
@@ -22,6 +26,8 @@ class CompanyClientOrder extends Model
         'total_price',
         'currency',
         'ordered_at',
+        'status',
+        'completed_at',
         'notes',
         'metadata',
     ];
@@ -33,6 +39,7 @@ class CompanyClientOrder extends Model
             'unit_price' => 'decimal:2',
             'total_price' => 'decimal:2',
             'ordered_at' => 'datetime',
+            'completed_at' => 'datetime',
             'metadata' => 'array',
         ];
     }

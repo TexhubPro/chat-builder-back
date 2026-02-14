@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\ChatController;
 use App\Http\Controllers\Api\ChatMessageController;
 use App\Http\Controllers\Api\CompanyController;
+use App\Http\Controllers\Api\CompanyClientOrderController;
 use App\Http\Controllers\Api\CompanySubscriptionController;
 use App\Http\Controllers\Api\InstagramIntegrationController;
 use App\Http\Controllers\Api\InvoiceController;
@@ -49,6 +50,14 @@ Route::prefix('company')
     ->group(function (): void {
         Route::get('/settings', [CompanyController::class, 'show']);
         Route::put('/settings', [CompanyController::class, 'update']);
+    });
+
+Route::prefix('client-requests')
+    ->middleware([EnsureUserIsActive::class])
+    ->group(function (): void {
+        Route::get('/', [CompanyClientOrderController::class, 'index']);
+        Route::patch('/{orderId}', [CompanyClientOrderController::class, 'update'])->whereNumber('orderId');
+        Route::delete('/{orderId}', [CompanyClientOrderController::class, 'destroy'])->whereNumber('orderId');
     });
 
 Route::post('/billing/alif/callback', [InvoiceController::class, 'alifCallback'])

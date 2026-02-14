@@ -389,6 +389,7 @@ class ChatController extends Controller
             'total_price' => $amount,
             'currency' => 'TJS',
             'ordered_at' => now(),
+            'status' => CompanyClientOrder::STATUS_NEW,
             'notes' => $note !== '' ? Str::limit($note, 2000, '') : null,
             'metadata' => $orderMetadata,
         ]);
