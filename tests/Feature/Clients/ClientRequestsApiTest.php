@@ -273,3 +273,45 @@ test('client requests api deletes request and linked appointment event', functio
         'id' => $event->id,
     ]);
 });
+
+test('client requests api archives completed request and hides it from list', function () {
+    [$user, $company, $token] = clientRequestsApiContext();
+
+    $client = CompanyClient::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'name' => 'Lead Archive',
+        'phone' => '+992900000501',
+    ]);
+
+    $order = CompanyClientOrder::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'company_client_id' => $client->id,
+        'service_name' => 'Archive service',
+        'status' => CompanyClientOrder::STATUS_COMPLETED,
+        'metadata' => [
+            'phone' => $client->phone,
+            'address' => 'Dushanbe',
+        ],
+    ]);
+
+    $this
+        ->withHeader('Authorization', "Bearer {$token}")
+        ->patchJson('/api/client-requests/'.$order->id, [
+            'archived' => true,
+        ])
+        ->assertOk();
+
+    $order->refresh();
+    expect((bool) data_get($order->metadata, 'archived', false))->toBeTrue();
+
+    $response = $this
+        ->withHeader('Authorization', "Bearer {$token}")
+        ->getJson('/api/client-requests')
+        ->assertOk()
+        ->json();
+
+    expect(collect($response['requests'])->contains(fn (array $item): bool => (int) $item['id'] === $order->id))
+        ->toBeFalse();
+});

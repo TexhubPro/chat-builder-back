@@ -29,7 +29,9 @@ class CompanyClientOrderController extends Controller
             ->orderByDesc('ordered_at')
             ->orderByDesc('created_at')
             ->limit(300)
-            ->get();
+            ->get()
+            ->reject(fn (CompanyClientOrder $order): bool => $this->isArchived($order->metadata))
+            ->values();
 
         $chatIds = $orders
             ->map(fn (CompanyClientOrder $order): ?int => $this->extractSourceChatId($order->metadata))
@@ -66,6 +68,7 @@ class CompanyClientOrderController extends Controller
                 Rule::in([
                     CompanyClientOrder::STATUS_NEW,
                     CompanyClientOrder::STATUS_IN_PROGRESS,
+                    CompanyClientOrder::STATUS_APPOINTMENTS,
                     CompanyClientOrder::STATUS_COMPLETED,
                 ]),
             ],
@@ -80,6 +83,7 @@ class CompanyClientOrderController extends Controller
             'appointment_time' => ['nullable', 'date_format:H:i'],
             'appointment_duration_minutes' => ['nullable', 'integer', 'min:15', 'max:720'],
             'clear_appointment' => ['nullable', 'boolean'],
+            'archived' => ['nullable', 'boolean'],
         ]);
 
         $user = $this->resolveUser($request);
@@ -96,6 +100,13 @@ class CompanyClientOrderController extends Controller
 
         if (array_key_exists('status', $validated)) {
             $status = $this->normalizeStatus((string) $validated['status']);
+
+            if ($status === CompanyClientOrder::STATUS_APPOINTMENTS && ! $appointmentsEnabled) {
+                return response()->json([
+                    'message' => 'Appointments are disabled for this company.',
+                ], 422);
+            }
+
             $order->status = $status;
             $order->completed_at = $status === CompanyClientOrder::STATUS_COMPLETED
                 ? ($order->completed_at ?? now())
@@ -207,6 +218,13 @@ class CompanyClientOrderController extends Controller
             }
 
             unset($metadata['appointment']);
+
+            if (
+                ! array_key_exists('status', $validated)
+                && $order->status === CompanyClientOrder::STATUS_APPOINTMENTS
+            ) {
+                $order->status = CompanyClientOrder::STATUS_IN_PROGRESS;
+            }
         }
 
         if ($bookAppointment || $hasAppointmentPayload) {
@@ -272,6 +290,15 @@ class CompanyClientOrderController extends Controller
                 'timezone' => $calendarEvent->timezone,
                 'duration_minutes' => $appointmentDurationMinutes,
             ];
+
+            if (! array_key_exists('status', $validated)) {
+                $order->status = CompanyClientOrder::STATUS_APPOINTMENTS;
+                $order->completed_at = null;
+            }
+        }
+
+        if (array_key_exists('archived', $validated) && (bool) $validated['archived'] === true) {
+            $metadata['archived'] = true;
         }
 
         $order->metadata = $metadata;
@@ -412,6 +439,7 @@ class CompanyClientOrderController extends Controller
     {
         return match ($status) {
             CompanyClientOrder::STATUS_IN_PROGRESS => CompanyClientOrder::STATUS_IN_PROGRESS,
+            CompanyClientOrder::STATUS_APPOINTMENTS => CompanyClientOrder::STATUS_APPOINTMENTS,
             CompanyClientOrder::STATUS_COMPLETED => CompanyClientOrder::STATUS_COMPLETED,
             default => CompanyClientOrder::STATUS_NEW,
         };
@@ -426,7 +454,13 @@ class CompanyClientOrderController extends Controller
             return 'completed';
         }
 
-        if ($appointmentsEnabled && $hasAppointment) {
+        if (
+            $appointmentsEnabled
+            && (
+                $status === CompanyClientOrder::STATUS_APPOINTMENTS
+                || $hasAppointment
+            )
+        ) {
             return 'appointments';
         }
 
@@ -435,6 +469,19 @@ class CompanyClientOrderController extends Controller
         }
 
         return 'new';
+    }
+
+    private function isArchived(mixed $metadata): bool
+    {
+        if (! is_array($metadata)) {
+            return false;
+        }
+
+        $archived = data_get($metadata, 'archived');
+
+        return $archived === true
+            || $archived === 1
+            || $archived === '1';
     }
 
     private function extractSourceChatId(mixed $metadata): ?int
