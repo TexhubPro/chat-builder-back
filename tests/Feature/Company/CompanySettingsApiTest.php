@@ -29,6 +29,14 @@ test('company settings api returns default company profile and settings', functi
     expect($response['company']['settings']['account_type'])->toBe('without_appointments');
     expect($response['company']['settings']['appointment']['enabled'])->toBeFalse();
     expect($response['company']['settings']['appointment']['slot_minutes'])->toBe(30);
+    expect($response['company']['settings']['delivery']['enabled'])->toBeFalse();
+    expect($response['company']['settings']['delivery']['require_delivery_address'])->toBeTrue();
+    expect($response['company']['settings']['delivery']['require_delivery_datetime'])->toBeTrue();
+    expect($response['company']['settings']['delivery']['default_eta_minutes'])->toBe(120);
+    expect((float) $response['company']['settings']['delivery']['fee'])->toBe(0.0);
+    expect($response['company']['settings']['delivery']['free_from_amount'])->toBeNull();
+    expect($response['company']['settings']['delivery']['available_from'])->toBe('09:00');
+    expect($response['company']['settings']['delivery']['available_to'])->toBe('21:00');
     expect($response['company']['settings']['business']['timezone'])->not->toBe('');
     expect($response['company']['settings']['business']['schedule']['monday']['is_day_off'])->toBeFalse();
     expect($response['company']['settings']['business']['schedule']['monday']['start_time'])->toBe('09:00');
@@ -88,7 +96,17 @@ test('company settings api updates company data and appointment settings', funct
                 'buffer_minutes' => 10,
                 'max_days_ahead' => 60,
                 'auto_confirm' => false,
-                'require_phone' => true,
+            ],
+            'delivery' => [
+                'enabled' => true,
+                'require_delivery_address' => true,
+                'require_delivery_datetime' => false,
+                'default_eta_minutes' => 90,
+                'fee' => 12.5,
+                'free_from_amount' => 300,
+                'available_from' => '10:00',
+                'available_to' => '22:00',
+                'notes' => 'Доставка только по городу.',
             ],
             'crm' => [
                 'order_required_fields' => ['phone', 'service_name'],
@@ -118,7 +136,15 @@ test('company settings api updates company data and appointment settings', funct
     expect($response['company']['settings']['appointment']['buffer_minutes'])->toBe(10);
     expect($response['company']['settings']['appointment']['max_days_ahead'])->toBe(60);
     expect($response['company']['settings']['appointment']['auto_confirm'])->toBeFalse();
-    expect($response['company']['settings']['appointment']['require_phone'])->toBeTrue();
+    expect($response['company']['settings']['delivery']['enabled'])->toBeTrue();
+    expect($response['company']['settings']['delivery']['require_delivery_address'])->toBeTrue();
+    expect($response['company']['settings']['delivery']['require_delivery_datetime'])->toBeFalse();
+    expect($response['company']['settings']['delivery']['default_eta_minutes'])->toBe(90);
+    expect((float) $response['company']['settings']['delivery']['fee'])->toBe(12.5);
+    expect((float) $response['company']['settings']['delivery']['free_from_amount'])->toBe(300.0);
+    expect($response['company']['settings']['delivery']['available_from'])->toBe('10:00');
+    expect($response['company']['settings']['delivery']['available_to'])->toBe('22:00');
+    expect($response['company']['settings']['delivery']['notes'])->toBe('Доставка только по городу.');
     expect($response['company']['settings']['business']['timezone'])->toBe('Asia/Dushanbe');
     expect($response['company']['settings']['business']['schedule']['monday']['is_day_off'])->toBeFalse();
     expect($response['company']['settings']['business']['schedule']['monday']['start_time'])->toBe('08:30');

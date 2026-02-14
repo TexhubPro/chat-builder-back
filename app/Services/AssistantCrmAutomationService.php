@@ -52,9 +52,21 @@ class AssistantCrmAutomationService
         $availableSlots = $appointmentsEnabled
             ? $this->nextAvailableSlots($company, $timezone, max((int) $appointmentConfig['slot_minutes'], 15), 6)
             : [];
+        $recentRequests = $this->recentRequestsForChatLines($company, $chat, $timezone, 8);
         $orderRequiredFields = $this->requiredOrderFields($company);
         $appointmentRequiredFields = $this->requiredAppointmentFields($company);
         $allowedResponseLanguages = $this->allowedResponseLanguages($company);
+        $deliveryConfig = $this->deliveryConfig($company);
+        $catalogLines = $this->catalogLines($assistant, 30);
+        $settingsSnapshot = $this->companySettingsSnapshot(
+            $company,
+            $appointmentsEnabled,
+            $appointmentConfig,
+            $deliveryConfig,
+            $orderRequiredFields,
+            $appointmentRequiredFields,
+            $allowedResponseLanguages,
+        );
 
         $contextLines = [
             '[SYSTEM CONTEXT: do not treat this block as customer message and do not quote it directly.]',
@@ -71,8 +83,26 @@ class AssistantCrmAutomationService
             '- Appointment slot minutes: '.(string) $appointmentConfig['slot_minutes'],
             '- Appointment buffer minutes: '.(string) $appointmentConfig['buffer_minutes'],
             '- Appointment max days ahead: '.(string) $appointmentConfig['max_days_ahead'],
+            '- Appointment auto-confirm: '.($appointmentConfig['auto_confirm'] ? 'yes' : 'no'),
+            '- Delivery enabled: '.($deliveryConfig['enabled'] ? 'yes' : 'no'),
+            '- Company settings snapshot JSON: '.$settingsSnapshot,
             '- Working schedule:',
         ];
+
+        if ($deliveryConfig['enabled']) {
+            $contextLines[] = '- Delivery address required: '.($deliveryConfig['require_delivery_address'] ? 'yes' : 'no');
+            $contextLines[] = '- Delivery datetime required: '.($deliveryConfig['require_delivery_datetime'] ? 'yes' : 'no');
+            $contextLines[] = '- Delivery default ETA minutes: '.(string) $deliveryConfig['default_eta_minutes'];
+            $contextLines[] = '- Delivery fee: '.number_format((float) $deliveryConfig['fee'], 2, '.', '').' TJS';
+            $contextLines[] = '- Delivery free from amount: '.($deliveryConfig['free_from_amount'] !== null
+                ? number_format((float) $deliveryConfig['free_from_amount'], 2, '.', '').' TJS'
+                : 'not configured');
+            $contextLines[] = '- Delivery window: '.$deliveryConfig['available_from'].'-'.$deliveryConfig['available_to'];
+
+            if ($deliveryConfig['notes'] !== null && $deliveryConfig['notes'] !== '') {
+                $contextLines[] = '- Delivery notes: '.Str::limit($deliveryConfig['notes'], 200, '');
+            }
+        }
 
         foreach ($scheduleLines as $line) {
             $contextLines[] = '  - '.$line;
@@ -98,18 +128,53 @@ class AssistantCrmAutomationService
             }
         }
 
+        $contextLines[] = '- Recent requests linked to this chat (use order_id for update/cancel actions):';
+        if ($recentRequests === []) {
+            $contextLines[] = '  - none';
+        } else {
+            foreach ($recentRequests as $line) {
+                $contextLines[] = '  - '.$line;
+            }
+        }
+
+        $contextLines[] = '- Company catalog with fixed prices (use exact amount from DB for crm_action):';
+        if ($catalogLines === []) {
+            $contextLines[] = '  - none';
+        } else {
+            foreach ($catalogLines as $line) {
+                $contextLines[] = '  - '.$line;
+            }
+        }
+
         $contextLines[] = 'CRM automation policy:';
         $contextLines[] = '- Required fields for order in this company: '.implode(', ', $orderRequiredFields).'.';
         $contextLines[] = '- Required fields for appointment in this company: '.implode(', ', $appointmentRequiredFields).'.';
+        $contextLines[] = '- Strict mode: ask only fields from required list for the current action.';
+        $contextLines[] = '- If a field is not in required list, do not ask it.';
         $contextLines[] = '- For order, ask only missing fields from the required order list.';
         $contextLines[] = '- For appointment, ask only missing fields from the required appointment list.';
+        $contextLines[] = '- create_appointment must always include appointment_date, appointment_time and appointment_duration_minutes in crm_action.';
+        $contextLines[] = '- If order item exists in company catalog, use exact catalog item name and catalog price in crm_action amount.';
+        $contextLines[] = '- Do not ask customer for amount when catalog item is found.';
+        $contextLines[] = '- Delivery settings apply only to delivery orders.';
+        $contextLines[] = '- If delivery order requires delivery datetime, include delivery_datetime in crm_action format YYYY-MM-DD HH:MM.';
         $contextLines[] = '- If required data is missing, ask concise follow-up questions and DO NOT emit crm_action.';
         $contextLines[] = '- Reply only in one of allowed response languages listed above.';
         $contextLines[] = '- If customer writes in another language, politely ask to continue in allowed languages.';
+        $contextLines[] = '- All actions and replies must strictly follow company settings snapshot JSON above.';
+        $contextLines[] = '- If customer asks to cancel an existing request, use cancel_order or cancel_appointment action.';
+        $contextLines[] = '- If customer asks to change booking date/time, use reschedule_appointment action.';
+        $contextLines[] = '- For update/cancel actions prefer order_id from recent requests list. If not available, latest request in current chat will be used.';
         $contextLines[] = '- When all required data is collected, append exactly one machine block at the very end:';
-        $contextLines[] = '  <crm_action>{"action":"create_order","client_name":"...","phone":"...","service_name":"...","address":"...","amount":0,"note":"..."}</crm_action>';
+        $contextLines[] = '  <crm_action>{"action":"create_order","client_name":"...","phone":"...","service_name":"...","address":"...","delivery_datetime":"YYYY-MM-DD HH:MM","amount":0,"note":"..."}</crm_action>';
         $contextLines[] = '- For appointment booking use:';
         $contextLines[] = '  <crm_action>{"action":"create_appointment","client_name":"...","phone":"...","service_name":"...","address":"...","appointment_date":"YYYY-MM-DD","appointment_time":"HH:MM","appointment_duration_minutes":60,"amount":0,"note":"..."}</crm_action>';
+        $contextLines[] = '- For canceling existing request use:';
+        $contextLines[] = '  <crm_action>{"action":"cancel_order","order_id":123,"reason":"..."}</crm_action>';
+        $contextLines[] = '- For canceling existing appointment use:';
+        $contextLines[] = '  <crm_action>{"action":"cancel_appointment","order_id":123,"reason":"..."}</crm_action>';
+        $contextLines[] = '- For rescheduling existing appointment use:';
+        $contextLines[] = '  <crm_action>{"action":"reschedule_appointment","order_id":123,"appointment_date":"YYYY-MM-DD","appointment_time":"HH:MM","appointment_duration_minutes":60,"note":"..."}</crm_action>';
         $contextLines[] = '- Do not include any extra JSON outside crm_action tags.';
 
         $basePrompt = trim($prompt);
@@ -208,6 +273,24 @@ class AssistantCrmAutomationService
                 $payload,
                 true
             ),
+            'cancel_order' => $this->cancelOrderFromPayload(
+                $company,
+                $chat,
+                $payload,
+                false
+            ),
+            'cancel_appointment' => $this->cancelOrderFromPayload(
+                $company,
+                $chat,
+                $payload,
+                true
+            ),
+            'reschedule_appointment' => $this->rescheduleAppointmentFromPayload(
+                $company,
+                $chat,
+                $assistant,
+                $payload
+            ),
             default => null,
         };
     }
@@ -223,6 +306,7 @@ class AssistantCrmAutomationService
             return null;
         }
 
+        $timezone = $this->companyTimezone($company);
         $requiredFields = $bookAppointment
             ? $this->requiredAppointmentFields($company)
             : $this->requiredOrderFields($company);
@@ -247,12 +331,21 @@ class AssistantCrmAutomationService
 
         $hasAmountValue = array_key_exists('amount', $payload) && is_numeric($payload['amount']);
         $amount = $hasAmountValue ? $this->normalizedAmount($payload['amount']) : 0.0;
+        $currency = 'TJS';
+        $catalogMatch = $this->resolveCatalogItemByName($assistant, $serviceName);
+        if ($catalogMatch !== null) {
+            $serviceName = (string) $catalogMatch['name'];
+            $amount = (float) $catalogMatch['price'];
+            $currency = (string) $catalogMatch['currency'];
+            $hasAmountValue = true;
+        }
+
+        $deliveryConfig = $this->deliveryConfig($company);
+        $deliveryDateTime = $this->resolveDeliveryDateTimeFromPayload($payload, $timezone);
 
         $appointmentDate = null;
         $appointmentTime = null;
         $appointmentDuration = null;
-        $appointmentConfig = $this->appointmentConfig($company);
-        $timezone = $this->companyTimezone($company);
         $startsAtLocal = null;
         $endsAtLocal = null;
         $startsAtUtc = null;
@@ -265,39 +358,15 @@ class AssistantCrmAutomationService
                 $payload['appointment_duration_minutes'] ?? $payload['duration_minutes'] ?? null
             );
 
-            $durationRequired = in_array('appointment_duration_minutes', $requiredFields, true);
             if ($appointmentDurationCandidate === null) {
-                if ($durationRequired) {
-                    return null;
-                }
-
-                $appointmentDurationCandidate = max((int) $appointmentConfig['slot_minutes'], 15);
+                return null;
             }
 
             $hasDate = preg_match('/^\d{4}-\d{2}-\d{2}$/', $appointmentDateCandidate) === 1;
             $hasTime = preg_match('/^(?:[01]\d|2[0-3]):[0-5]\d$/', $appointmentTimeCandidate) === 1;
-            $dateRequired = in_array('appointment_date', $requiredFields, true);
-            $timeRequired = in_array('appointment_time', $requiredFields, true);
 
             if (! $hasDate || ! $hasTime) {
-                if ($dateRequired || $timeRequired) {
-                    return null;
-                }
-
-                $firstAvailableSlot = $this->nextAvailableSlots(
-                    $company,
-                    $timezone,
-                    $appointmentDurationCandidate,
-                    1
-                );
-
-                if ($firstAvailableSlot === []) {
-                    return null;
-                }
-
-                [$appointmentDateCandidate, $appointmentTimeCandidate] = explode(' ', $firstAvailableSlot[0], 2);
-                $hasDate = preg_match('/^\d{4}-\d{2}-\d{2}$/', $appointmentDateCandidate) === 1;
-                $hasTime = preg_match('/^(?:[01]\d|2[0-3]):[0-5]\d$/', $appointmentTimeCandidate) === 1;
+                return null;
             }
 
             if (! $hasDate || ! $hasTime) {
@@ -312,32 +381,7 @@ class AssistantCrmAutomationService
             $endsAtLocal = (clone $startsAtLocal)->addMinutes($appointmentDurationCandidate);
 
             if (! $this->isAppointmentSlotAvailable($company, $startsAtLocal, $endsAtLocal)) {
-                if ($dateRequired || $timeRequired) {
-                    return null;
-                }
-
-                $firstAvailableSlot = $this->nextAvailableSlots(
-                    $company,
-                    $timezone,
-                    $appointmentDurationCandidate,
-                    1
-                );
-
-                if ($firstAvailableSlot === []) {
-                    return null;
-                }
-
-                [$appointmentDateCandidate, $appointmentTimeCandidate] = explode(' ', $firstAvailableSlot[0], 2);
-                $startsAtLocal = Carbon::createFromFormat(
-                    'Y-m-d H:i',
-                    "{$appointmentDateCandidate} {$appointmentTimeCandidate}",
-                    $timezone
-                );
-                $endsAtLocal = (clone $startsAtLocal)->addMinutes($appointmentDurationCandidate);
-
-                if (! $this->isAppointmentSlotAvailable($company, $startsAtLocal, $endsAtLocal)) {
-                    return null;
-                }
+                return null;
             }
 
             $appointmentDate = $appointmentDateCandidate;
@@ -378,6 +422,31 @@ class AssistantCrmAutomationService
             'required_fields' => $requiredFields,
             'assistant_action' => $payload,
         ];
+
+        if ($catalogMatch !== null) {
+            $orderMetadata['catalog_match'] = [
+                'type' => (string) $catalogMatch['type'],
+                'id' => (int) $catalogMatch['id'],
+                'name' => (string) $catalogMatch['name'],
+                'price' => $catalogMatch['price'],
+                'currency' => (string) $catalogMatch['currency'],
+            ];
+        }
+
+        if (! $bookAppointment && $deliveryConfig['enabled']) {
+            $orderMetadata['delivery'] = [
+                'enabled' => true,
+                'required_address' => (bool) $deliveryConfig['require_delivery_address'],
+                'required_datetime' => (bool) $deliveryConfig['require_delivery_datetime'],
+                'requested_datetime' => $deliveryDateTime,
+                'default_eta_minutes' => (int) $deliveryConfig['default_eta_minutes'],
+                'fee' => (float) $deliveryConfig['fee'],
+                'free_from_amount' => $deliveryConfig['free_from_amount'],
+                'available_from' => (string) $deliveryConfig['available_from'],
+                'available_to' => (string) $deliveryConfig['available_to'],
+                'notes' => $deliveryConfig['notes'],
+            ];
+        }
 
         $calendarEvent = null;
 
@@ -431,7 +500,7 @@ class AssistantCrmAutomationService
             'quantity' => 1,
             'unit_price' => $amount,
             'total_price' => $amount,
-            'currency' => 'TJS',
+            'currency' => Str::limit($currency, 12, ''),
             'ordered_at' => now(),
             'status' => $bookAppointment
                 ? CompanyClientOrder::STATUS_APPOINTMENTS
@@ -454,6 +523,357 @@ class AssistantCrmAutomationService
         return $bookAppointment
             ? 'Заявка и запись сохранены.'
             : 'Заявка сохранена.';
+    }
+
+    private function cancelOrderFromPayload(
+        Company $company,
+        Chat $chat,
+        array $payload,
+        bool $appointmentOnly
+    ): ?string {
+        $order = $this->resolveOrderForAction($company, $chat, $payload, $appointmentOnly);
+        if (! $order) {
+            return null;
+        }
+
+        $metadata = is_array($order->metadata) ? $order->metadata : [];
+        $reason = trim((string) ($payload['reason'] ?? $payload['note'] ?? ''));
+        $hadAppointment = $this->orderHasAppointment($order);
+        $calendarEvent = $this->resolveOrderCalendarEvent($company, $order, $payload);
+
+        if ($calendarEvent) {
+            $eventMetadata = is_array($calendarEvent->metadata) ? $calendarEvent->metadata : [];
+            $eventMetadata['order_id'] = $order->id;
+            $eventMetadata['source'] = 'assistant_crm_action';
+            $eventMetadata['canceled_by'] = 'assistant';
+            $eventMetadata['canceled_at'] = now()->toIso8601String();
+            if ($reason !== '') {
+                $eventMetadata['cancellation_reason'] = Str::limit($reason, 500, '');
+            }
+
+            $calendarEvent->forceFill([
+                'status' => CompanyCalendarEvent::STATUS_CANCELED,
+                'metadata' => $eventMetadata,
+            ])->save();
+
+            if (is_array($metadata['appointment'] ?? null)) {
+                $metadata['appointment']['status'] = CompanyCalendarEvent::STATUS_CANCELED;
+                $metadata['appointment']['canceled_at'] = now()->toIso8601String();
+                if ($reason !== '') {
+                    $metadata['appointment']['cancellation_reason'] = Str::limit($reason, 500, '');
+                }
+            }
+        }
+
+        $metadata['canceled'] = true;
+        $metadata['canceled_at'] = now()->toIso8601String();
+        if ($reason !== '') {
+            $metadata['cancellation_reason'] = Str::limit($reason, 500, '');
+        }
+        $metadata['assistant_cancel_action'] = $payload;
+
+        $order->forceFill([
+            'status' => CompanyClientOrder::STATUS_COMPLETED,
+            'completed_at' => $order->completed_at ?? now(),
+            'metadata' => $metadata,
+        ])->save();
+
+        if ($calendarEvent || $hadAppointment || $appointmentOnly) {
+            return 'Запись отменена и перенесена в завершенные.';
+        }
+
+        return 'Заявка отменена и перенесена в завершенные.';
+    }
+
+    private function rescheduleAppointmentFromPayload(
+        Company $company,
+        Chat $chat,
+        Assistant $assistant,
+        array $payload
+    ): ?string {
+        if (! $this->appointmentsEnabledForCompany($company)) {
+            return null;
+        }
+
+        $order = $this->resolveOrderForAction($company, $chat, $payload, true);
+        if (! $order) {
+            return null;
+        }
+
+        $appointmentDate = trim((string) ($payload['appointment_date'] ?? ''));
+        $appointmentTime = trim((string) ($payload['appointment_time'] ?? ''));
+        $appointmentDuration = $this->normalizeDurationMinutes(
+            $payload['appointment_duration_minutes'] ?? $payload['duration_minutes'] ?? null
+        );
+
+        if (
+            preg_match('/^\d{4}-\d{2}-\d{2}$/', $appointmentDate) !== 1
+            || preg_match('/^(?:[01]\d|2[0-3]):[0-5]\d$/', $appointmentTime) !== 1
+            || $appointmentDuration === null
+        ) {
+            return null;
+        }
+
+        $timezone = $this->companyTimezone($company);
+        try {
+            $startsAtLocal = Carbon::createFromFormat(
+                'Y-m-d H:i',
+                "{$appointmentDate} {$appointmentTime}",
+                $timezone
+            );
+        } catch (Throwable) {
+            return null;
+        }
+
+        $endsAtLocal = (clone $startsAtLocal)->addMinutes($appointmentDuration);
+        $calendarEvent = $this->resolveOrderCalendarEvent($company, $order, $payload);
+
+        if (! $this->isAppointmentSlotAvailable($company, $startsAtLocal, $endsAtLocal, $calendarEvent?->id)) {
+            return null;
+        }
+
+        $startsAtUtc = $startsAtLocal->copy()->utc();
+        $endsAtUtc = $endsAtLocal->copy()->utc();
+
+        $metadata = is_array($order->metadata) ? $order->metadata : [];
+        $location = trim((string) ($payload['address'] ?? ($metadata['address'] ?? '')));
+        $note = trim((string) ($payload['note'] ?? ''));
+
+        if ($location !== '') {
+            $metadata['address'] = Str::limit($location, 255, '');
+        }
+
+        if ($note !== '') {
+            $order->notes = Str::limit($note, 2000, '');
+        }
+
+        if ($calendarEvent) {
+            $eventMetadata = is_array($calendarEvent->metadata) ? $calendarEvent->metadata : [];
+            $eventMetadata['order_id'] = $order->id;
+            $eventMetadata['source'] = 'assistant_crm_action';
+            $eventMetadata['rescheduled_at'] = now()->toIso8601String();
+
+            $calendarEvent->forceFill([
+                'title' => 'Appointment: '.Str::limit((string) $order->service_name, 120, ''),
+                'description' => $order->notes,
+                'starts_at' => $startsAtUtc,
+                'ends_at' => $endsAtUtc,
+                'timezone' => $timezone,
+                'status' => CompanyCalendarEvent::STATUS_SCHEDULED,
+                'location' => $location !== '' ? Str::limit($location, 255, '') : null,
+                'metadata' => $eventMetadata,
+            ])->save();
+        } else {
+            $calendarEvent = CompanyCalendarEvent::query()->create([
+                'user_id' => $company->user_id,
+                'company_id' => $company->id,
+                'company_client_id' => $order->company_client_id,
+                'assistant_id' => $order->assistant_id ?? $assistant->id,
+                'assistant_service_id' => $order->assistant_service_id,
+                'title' => 'Appointment: '.Str::limit((string) $order->service_name, 120, ''),
+                'description' => $order->notes,
+                'starts_at' => $startsAtUtc,
+                'ends_at' => $endsAtUtc,
+                'timezone' => $timezone,
+                'status' => CompanyCalendarEvent::STATUS_SCHEDULED,
+                'location' => $location !== '' ? Str::limit($location, 255, '') : null,
+                'metadata' => [
+                    'source' => 'assistant_crm_action',
+                    'order_id' => $order->id,
+                    'chat_id' => $chat->id,
+                ],
+            ]);
+        }
+
+        $metadata['appointment'] = [
+            'calendar_event_id' => $calendarEvent->id,
+            'starts_at' => $calendarEvent->starts_at?->toIso8601String(),
+            'ends_at' => $calendarEvent->ends_at?->toIso8601String(),
+            'timezone' => $calendarEvent->timezone,
+            'duration_minutes' => $appointmentDuration,
+            'status' => CompanyCalendarEvent::STATUS_SCHEDULED,
+        ];
+        $metadata['assistant_reschedule_action'] = $payload;
+
+        $order->forceFill([
+            'status' => CompanyClientOrder::STATUS_APPOINTMENTS,
+            'completed_at' => null,
+            'metadata' => $metadata,
+        ])->save();
+
+        return 'Запись обновлена.';
+    }
+
+    private function resolveOrderForAction(
+        Company $company,
+        Chat $chat,
+        array $payload,
+        bool $requireAppointment
+    ): ?CompanyClientOrder {
+        $orderId = $this->positiveInt($payload['order_id'] ?? null);
+        if ($orderId !== null) {
+            $order = CompanyClientOrder::query()
+                ->where('company_id', $company->id)
+                ->whereKey($orderId)
+                ->first();
+
+            if ($order && (! $requireAppointment || $this->orderHasAppointment($order))) {
+                return $order;
+            }
+        }
+
+        $calendarEventId = $this->positiveInt($payload['calendar_event_id'] ?? null);
+        if ($calendarEventId !== null) {
+            $calendarEvent = CompanyCalendarEvent::query()
+                ->where('company_id', $company->id)
+                ->whereKey($calendarEventId)
+                ->first();
+
+            if ($calendarEvent) {
+                $eventMetadata = is_array($calendarEvent->metadata) ? $calendarEvent->metadata : [];
+                $metadataOrderId = $this->positiveInt($eventMetadata['order_id'] ?? null);
+
+                if ($metadataOrderId !== null) {
+                    $order = CompanyClientOrder::query()
+                        ->where('company_id', $company->id)
+                        ->whereKey($metadataOrderId)
+                        ->first();
+
+                    if ($order && (! $requireAppointment || $this->orderHasAppointment($order))) {
+                        return $order;
+                    }
+                }
+
+                $orders = CompanyClientOrder::query()
+                    ->where('company_id', $company->id)
+                    ->orderByDesc('ordered_at')
+                    ->orderByDesc('id')
+                    ->limit(200)
+                    ->get()
+                    ->filter(fn (CompanyClientOrder $order): bool => $this->extractCalendarEventIdFromOrderMetadata($order->metadata) === $calendarEventId)
+                    ->values();
+
+                $candidate = $this->selectBestOrderCandidate($orders->all(), $requireAppointment);
+                if ($candidate) {
+                    return $candidate;
+                }
+            }
+        }
+
+        $phone = $this->normalizePhone($payload['phone'] ?? null);
+        if ($phone !== null) {
+            $client = $company->clients()
+                ->where('phone', $phone)
+                ->first();
+
+            if ($client) {
+                $orders = CompanyClientOrder::query()
+                    ->where('company_id', $company->id)
+                    ->where('company_client_id', $client->id)
+                    ->orderByDesc('ordered_at')
+                    ->orderByDesc('id')
+                    ->limit(50)
+                    ->get();
+
+                $candidate = $this->selectBestOrderCandidate($orders->all(), $requireAppointment);
+                if ($candidate) {
+                    return $candidate;
+                }
+            }
+        }
+
+        $chatCandidates = [];
+        $payloadChatId = $this->positiveInt($payload['chat_id'] ?? null);
+        if ($payloadChatId !== null) {
+            $chatCandidates[] = $payloadChatId;
+        }
+        $chatCandidates[] = (int) $chat->id;
+        $chatCandidates = array_values(array_unique(array_filter($chatCandidates, static fn (int $chatId): bool => $chatId > 0)));
+
+        foreach ($chatCandidates as $chatId) {
+            $orders = CompanyClientOrder::query()
+                ->where('company_id', $company->id)
+                ->orderByDesc('ordered_at')
+                ->orderByDesc('id')
+                ->limit(200)
+                ->get()
+                ->filter(fn (CompanyClientOrder $order): bool => $this->metadataHasChatLink($order->metadata, $chatId))
+                ->values();
+
+            $candidate = $this->selectBestOrderCandidate($orders->all(), $requireAppointment);
+            if ($candidate) {
+                return $candidate;
+            }
+        }
+
+        $linkedClient = $this->resolveLinkedClient($company, $chat);
+        if ($linkedClient) {
+            $orders = CompanyClientOrder::query()
+                ->where('company_id', $company->id)
+                ->where('company_client_id', $linkedClient->id)
+                ->orderByDesc('ordered_at')
+                ->orderByDesc('id')
+                ->limit(50)
+                ->get();
+
+            return $this->selectBestOrderCandidate($orders->all(), $requireAppointment);
+        }
+
+        return null;
+    }
+
+    /**
+     * @param array<int, CompanyClientOrder> $orders
+     */
+    private function selectBestOrderCandidate(array $orders, bool $requireAppointment): ?CompanyClientOrder
+    {
+        if ($orders === []) {
+            return null;
+        }
+
+        $passes = [
+            static fn (CompanyClientOrder $order): bool => (string) $order->status !== CompanyClientOrder::STATUS_COMPLETED,
+            static fn (CompanyClientOrder $order): bool => true,
+        ];
+
+        foreach ($passes as $statusFilter) {
+            foreach ($orders as $order) {
+                if (! $statusFilter($order)) {
+                    continue;
+                }
+
+                if ($this->isArchivedOrder($order->metadata)) {
+                    continue;
+                }
+
+                if ($requireAppointment && ! $this->orderHasAppointment($order)) {
+                    continue;
+                }
+
+                return $order;
+            }
+        }
+
+        return null;
+    }
+
+    private function resolveOrderCalendarEvent(
+        Company $company,
+        CompanyClientOrder $order,
+        array $payload
+    ): ?CompanyCalendarEvent {
+        $payloadEventId = $this->positiveInt($payload['calendar_event_id'] ?? null);
+        $metadataEventId = $this->extractCalendarEventIdFromOrderMetadata($order->metadata);
+        $eventId = $payloadEventId ?? $metadataEventId;
+
+        if ($eventId === null) {
+            return null;
+        }
+
+        return CompanyCalendarEvent::query()
+            ->where('company_id', $company->id)
+            ->whereKey($eventId)
+            ->first();
     }
 
     private function resolveOrCreateClient(
@@ -546,6 +966,350 @@ class AssistantCrmAutomationService
         $amount = round((float) $value, 2);
 
         return $amount < 0 ? 0.0 : $amount;
+    }
+
+    private function catalogLines(Assistant $assistant, int $limit): array
+    {
+        $maxItems = max(min($limit, 80), 1);
+        $serviceLimit = max((int) ceil($maxItems / 2), 1);
+        $productLimit = max($maxItems - $serviceLimit, 1);
+
+        $services = $assistant->services()
+            ->where('is_active', true)
+            ->orderBy('sort_order')
+            ->orderBy('id')
+            ->limit($serviceLimit)
+            ->get([
+                'id',
+                'name',
+                'price',
+                'currency',
+            ]);
+
+        $products = $assistant->products()
+            ->where('is_active', true)
+            ->orderBy('sort_order')
+            ->orderBy('id')
+            ->limit($productLimit)
+            ->get([
+                'id',
+                'name',
+                'price',
+                'currency',
+                'stock_quantity',
+                'is_unlimited_stock',
+            ]);
+
+        $lines = [];
+
+        foreach ($services as $service) {
+            $lines[] = sprintf(
+                '[service #%d] %s | %s %s',
+                (int) $service->id,
+                Str::limit((string) $service->name, 120, ''),
+                number_format($this->normalizedAmount($service->price), 2, '.', ''),
+                (string) ($service->currency ?: 'TJS')
+            );
+        }
+
+        foreach ($products as $product) {
+            $stockLabel = (bool) $product->is_unlimited_stock
+                ? 'unlimited stock'
+                : ('stock '.max((int) ($product->stock_quantity ?? 0), 0));
+            $lines[] = sprintf(
+                '[product #%d] %s | %s %s | %s',
+                (int) $product->id,
+                Str::limit((string) $product->name, 120, ''),
+                number_format($this->normalizedAmount($product->price), 2, '.', ''),
+                (string) ($product->currency ?: 'TJS'),
+                $stockLabel
+            );
+        }
+
+        return $lines;
+    }
+
+    private function resolveCatalogItemByName(Assistant $assistant, string $name): ?array
+    {
+        $needle = $this->catalogLookupKey($name);
+        if ($needle === '') {
+            return null;
+        }
+
+        $services = $assistant->services()
+            ->where('is_active', true)
+            ->orderBy('sort_order')
+            ->orderBy('id')
+            ->limit(200)
+            ->get([
+                'id',
+                'name',
+                'price',
+                'currency',
+            ]);
+
+        foreach ($services as $service) {
+            if ($this->catalogLookupKey((string) $service->name) !== $needle) {
+                continue;
+            }
+
+            return [
+                'type' => 'service',
+                'id' => (int) $service->id,
+                'name' => trim((string) $service->name),
+                'price' => $this->normalizedAmount($service->price),
+                'currency' => trim((string) ($service->currency ?: 'TJS')),
+            ];
+        }
+
+        $products = $assistant->products()
+            ->where('is_active', true)
+            ->orderBy('sort_order')
+            ->orderBy('id')
+            ->limit(200)
+            ->get([
+                'id',
+                'name',
+                'price',
+                'currency',
+            ]);
+
+        foreach ($products as $product) {
+            if ($this->catalogLookupKey((string) $product->name) !== $needle) {
+                continue;
+            }
+
+            return [
+                'type' => 'product',
+                'id' => (int) $product->id,
+                'name' => trim((string) $product->name),
+                'price' => $this->normalizedAmount($product->price),
+                'currency' => trim((string) ($product->currency ?: 'TJS')),
+            ];
+        }
+
+        return null;
+    }
+
+    private function catalogLookupKey(string $value): string
+    {
+        $normalized = Str::lower(trim($value));
+        if ($normalized === '') {
+            return '';
+        }
+
+        return (string) preg_replace('/\s+/u', ' ', $normalized);
+    }
+
+    private function deliveryConfig(Company $company): array
+    {
+        $settings = is_array($company->settings) ? $company->settings : [];
+        $rawFreeFrom = data_get($settings, 'delivery.free_from_amount');
+
+        return [
+            'enabled' => (bool) data_get($settings, 'delivery.enabled', false),
+            'require_delivery_address' => (bool) data_get($settings, 'delivery.require_delivery_address', true),
+            'require_delivery_datetime' => (bool) data_get($settings, 'delivery.require_delivery_datetime', true),
+            'default_eta_minutes' => max((int) data_get($settings, 'delivery.default_eta_minutes', 120), 15),
+            'fee' => $this->normalizedAmount(data_get($settings, 'delivery.fee', 0)),
+            'free_from_amount' => is_numeric($rawFreeFrom) ? $this->normalizedAmount($rawFreeFrom) : null,
+            'available_from' => $this->normalizeClockTime((string) data_get($settings, 'delivery.available_from', '09:00'), '09:00'),
+            'available_to' => $this->normalizeClockTime((string) data_get($settings, 'delivery.available_to', '21:00'), '21:00'),
+            'notes' => $this->normalizeNullableText(data_get($settings, 'delivery.notes')),
+        ];
+    }
+
+    private function resolveDeliveryDateTimeFromPayload(array $payload, string $timezone): ?string
+    {
+        $directCandidates = [
+            $payload['delivery_datetime'] ?? null,
+            $payload['delivery_at'] ?? null,
+        ];
+
+        foreach ($directCandidates as $candidate) {
+            if (! is_string($candidate) || trim($candidate) === '') {
+                continue;
+            }
+
+            $parsed = $this->parseDateTimeInTimezone($candidate, $timezone);
+            if ($parsed !== null) {
+                return $parsed->setTimezone($timezone)->format('Y-m-d H:i');
+            }
+        }
+
+        $date = trim((string) ($payload['delivery_date'] ?? ''));
+        $time = trim((string) ($payload['delivery_time'] ?? ''));
+        if (
+            preg_match('/^\d{4}-\d{2}-\d{2}$/', $date) === 1
+            && preg_match('/^(?:[01]\d|2[0-3]):[0-5]\d$/', $time) === 1
+        ) {
+            $parsed = $this->parseDateTimeInTimezone($date.' '.$time, $timezone);
+
+            return $parsed?->setTimezone($timezone)->format('Y-m-d H:i');
+        }
+
+        return null;
+    }
+
+    private function parseDateTimeInTimezone(string $value, string $timezone): ?Carbon
+    {
+        $trimmed = trim($value);
+        if ($trimmed === '') {
+            return null;
+        }
+
+        $formats = [
+            'Y-m-d H:i',
+            'Y-m-d\TH:i',
+            'Y-m-d\TH:i:s',
+            \DateTimeInterface::ATOM,
+        ];
+
+        foreach ($formats as $format) {
+            try {
+                return Carbon::createFromFormat($format, $trimmed, $timezone);
+            } catch (Throwable) {
+                // Continue to next format.
+            }
+        }
+
+        try {
+            return Carbon::parse($trimmed, $timezone);
+        } catch (Throwable) {
+            return null;
+        }
+    }
+
+    private function normalizeClockTime(string $value, string $fallback): string
+    {
+        $trimmed = trim($value);
+        if (preg_match('/^(?:[01]\d|2[0-3]):[0-5]\d$/', $trimmed) === 1) {
+            return $trimmed;
+        }
+
+        return $fallback;
+    }
+
+    private function normalizeNullableText(mixed $value): ?string
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $trimmed = trim($value);
+
+        return $trimmed === '' ? null : $trimmed;
+    }
+
+    private function positiveInt(mixed $value): ?int
+    {
+        if (! is_numeric($value)) {
+            return null;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue > 0 ? $intValue : null;
+    }
+
+    private function isArchivedOrder(mixed $metadata): bool
+    {
+        if (! is_array($metadata)) {
+            return false;
+        }
+
+        $archived = data_get($metadata, 'archived');
+
+        return $archived === true
+            || $archived === 1
+            || $archived === '1';
+    }
+
+    private function extractCalendarEventIdFromOrderMetadata(mixed $metadata): ?int
+    {
+        if (! is_array($metadata)) {
+            return null;
+        }
+
+        return $this->positiveInt(data_get($metadata, 'appointment.calendar_event_id'));
+    }
+
+    private function orderHasAppointment(CompanyClientOrder $order): bool
+    {
+        return $this->extractCalendarEventIdFromOrderMetadata($order->metadata) !== null;
+    }
+
+    private function metadataHasChatLink(mixed $metadata, int $chatId): bool
+    {
+        if (! is_array($metadata) || $chatId <= 0) {
+            return false;
+        }
+
+        $candidates = [
+            data_get($metadata, 'chat_id'),
+            data_get($metadata, 'source_chat_id'),
+            data_get($metadata, 'chat.id'),
+            data_get($metadata, 'source.chat_id'),
+        ];
+
+        foreach ($candidates as $value) {
+            if (is_numeric($value) && (int) $value === $chatId) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function recentRequestsForChatLines(Company $company, Chat $chat, string $timezone, int $limit): array
+    {
+        $requests = CompanyClientOrder::query()
+            ->where('company_id', $company->id)
+            ->with(['client:id,name,phone'])
+            ->orderByDesc('ordered_at')
+            ->orderByDesc('id')
+            ->limit(max($limit * 5, 40))
+            ->get()
+            ->filter(fn (CompanyClientOrder $order): bool => $this->metadataHasChatLink($order->metadata, (int) $chat->id))
+            ->reject(fn (CompanyClientOrder $order): bool => $this->isArchivedOrder($order->metadata))
+            ->take(max($limit, 1))
+            ->values();
+
+        $lines = [];
+
+        foreach ($requests as $order) {
+            $metadata = is_array($order->metadata) ? $order->metadata : [];
+            $phone = trim((string) ($order->client?->phone ?? ($metadata['phone'] ?? '')));
+            $serviceName = trim((string) ($order->service_name ?? ''));
+            $serviceName = $serviceName !== '' ? $serviceName : 'Order';
+            $orderedAt = ($order->ordered_at ?? $order->created_at)?->copy()->setTimezone($timezone);
+            $orderedAtLabel = $orderedAt ? $orderedAt->format('Y-m-d H:i') : '-';
+            $status = trim((string) ($order->status ?? CompanyClientOrder::STATUS_NEW));
+
+            $line = sprintf(
+                '#%d | status=%s | service=%s | phone=%s | created=%s',
+                (int) $order->id,
+                $status !== '' ? $status : CompanyClientOrder::STATUS_NEW,
+                Str::limit($serviceName, 80, ''),
+                $phone !== '' ? Str::limit($phone, 32, '') : '-',
+                $orderedAtLabel
+            );
+
+            $appointment = is_array($metadata['appointment'] ?? null) ? $metadata['appointment'] : null;
+            $appointmentStart = is_string($appointment['starts_at'] ?? null) ? trim((string) $appointment['starts_at']) : '';
+            if ($appointmentStart !== '') {
+                try {
+                    $appointmentStartLabel = Carbon::parse($appointmentStart)->setTimezone($timezone)->format('Y-m-d H:i');
+                    $line .= ' | appointment='.$appointmentStartLabel;
+                } catch (Throwable) {
+                    // Ignore invalid appointment datetime.
+                }
+            }
+
+            $lines[] = $line;
+        }
+
+        return $lines;
     }
 
     private function requiredOrderFields(Company $company): array
@@ -759,7 +1523,79 @@ class AssistantCrmAutomationService
             'slot_minutes' => max((int) data_get($settings, 'appointment.slot_minutes', 30), 15),
             'buffer_minutes' => max((int) data_get($settings, 'appointment.buffer_minutes', 0), 0),
             'max_days_ahead' => max((int) data_get($settings, 'appointment.max_days_ahead', 30), 1),
+            'auto_confirm' => (bool) data_get($settings, 'appointment.auto_confirm', true),
         ];
+    }
+
+    private function companySettingsSnapshot(
+        Company $company,
+        bool $appointmentsEnabled,
+        array $appointmentConfig,
+        array $deliveryConfig,
+        array $orderRequiredFields,
+        array $appointmentRequiredFields,
+        array $allowedResponseLanguages
+    ): string {
+        $settings = is_array($company->settings) ? $company->settings : [];
+        $businessAddress = data_get($settings, 'business.address');
+        $accountType = (string) data_get($settings, 'account_type', 'without_appointments');
+        $schedule = is_array(data_get($settings, 'business.schedule'))
+            ? data_get($settings, 'business.schedule')
+            : [];
+        $companyName = trim((string) ($company->name ?? ''));
+
+        $snapshot = [
+            'company_profile' => [
+                'id' => (int) $company->id,
+                'name' => $companyName !== '' ? $companyName : null,
+                'short_description' => $this->normalizeNullableText($company->short_description),
+                'industry' => $this->normalizeNullableText($company->industry),
+                'primary_goal' => $this->normalizeNullableText($company->primary_goal),
+                'contact_email' => $this->normalizeNullableText($company->contact_email),
+                'contact_phone' => $this->normalizeNullableText($company->contact_phone),
+                'website' => $this->normalizeNullableText($company->website),
+                'status' => $this->normalizeNullableText($company->status),
+            ],
+            'account_type' => $accountType,
+            'business' => [
+                'address' => is_string($businessAddress) ? trim($businessAddress) : null,
+                'timezone' => $this->companyTimezone($company),
+                'schedule' => $schedule,
+            ],
+            'appointment' => [
+                'enabled' => $appointmentsEnabled,
+                'slot_minutes' => (int) ($appointmentConfig['slot_minutes'] ?? 30),
+                'buffer_minutes' => (int) ($appointmentConfig['buffer_minutes'] ?? 0),
+                'max_days_ahead' => (int) ($appointmentConfig['max_days_ahead'] ?? 30),
+                'auto_confirm' => (bool) ($appointmentConfig['auto_confirm'] ?? true),
+            ],
+            'delivery' => [
+                'enabled' => (bool) ($deliveryConfig['enabled'] ?? false),
+                'require_delivery_address' => (bool) ($deliveryConfig['require_delivery_address'] ?? true),
+                'require_delivery_datetime' => (bool) ($deliveryConfig['require_delivery_datetime'] ?? true),
+                'default_eta_minutes' => (int) ($deliveryConfig['default_eta_minutes'] ?? 120),
+                'fee' => (float) ($deliveryConfig['fee'] ?? 0),
+                'free_from_amount' => $deliveryConfig['free_from_amount'] ?? null,
+                'available_from' => (string) ($deliveryConfig['available_from'] ?? '09:00'),
+                'available_to' => (string) ($deliveryConfig['available_to'] ?? '21:00'),
+                'notes' => $deliveryConfig['notes'] ?? null,
+            ],
+            'crm' => [
+                'order_required_fields' => array_values($orderRequiredFields),
+                'appointment_required_fields' => array_values($appointmentRequiredFields),
+            ],
+            'ai' => [
+                'response_languages' => array_values($allowedResponseLanguages),
+            ],
+        ];
+
+        $json = json_encode($snapshot, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+        if (! is_string($json) || trim($json) === '') {
+            return '{}';
+        }
+
+        return $json;
     }
 
     private function companyTimezone(Company $company): string
@@ -924,7 +1760,8 @@ class AssistantCrmAutomationService
     private function isAppointmentSlotAvailable(
         Company $company,
         Carbon $startsAtLocal,
-        Carbon $endsAtLocal
+        Carbon $endsAtLocal,
+        ?int $ignoreCalendarEventId = null
     ): bool {
         $timezone = $this->companyTimezone($company);
         $settings = is_array($company->settings) ? $company->settings : [];
@@ -959,6 +1796,10 @@ class AssistantCrmAutomationService
                 CompanyCalendarEvent::STATUS_CONFIRMED,
             ])
             ->where('starts_at', '<', $endsAtUtc)
+            ->when(
+                $ignoreCalendarEventId !== null,
+                fn ($query) => $query->whereKeyNot($ignoreCalendarEventId)
+            )
             ->orderBy('starts_at')
             ->get([
                 'starts_at',

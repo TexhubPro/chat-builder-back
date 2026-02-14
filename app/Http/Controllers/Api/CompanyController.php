@@ -93,7 +93,6 @@ class CompanyController extends Controller
             'settings.appointment.buffer_minutes' => ['nullable', 'integer', 'min:0', 'max:120'],
             'settings.appointment.max_days_ahead' => ['nullable', 'integer', 'min:1', 'max:365'],
             'settings.appointment.auto_confirm' => ['nullable', 'boolean'],
-            'settings.appointment.require_phone' => ['nullable', 'boolean'],
             'settings.delivery' => ['nullable', 'array'],
             'settings.delivery.enabled' => ['nullable', 'boolean'],
             'settings.delivery.require_delivery_address' => ['nullable', 'boolean'],
@@ -184,7 +183,6 @@ class CompanyController extends Controller
                 'buffer_minutes' => 0,
                 'max_days_ahead' => 30,
                 'auto_confirm' => true,
-                'require_phone' => true,
             ],
             'delivery' => [
                 'enabled' => false,
@@ -266,7 +264,7 @@ class CompanyController extends Controller
         $settings['appointment']['buffer_minutes'] = (int) ($settings['appointment']['buffer_minutes'] ?? 0);
         $settings['appointment']['max_days_ahead'] = (int) ($settings['appointment']['max_days_ahead'] ?? 30);
         $settings['appointment']['auto_confirm'] = (bool) ($settings['appointment']['auto_confirm'] ?? true);
-        $settings['appointment']['require_phone'] = (bool) ($settings['appointment']['require_phone'] ?? true);
+        unset($settings['appointment']['require_phone']);
         $settings['delivery']['enabled'] = (bool) ($settings['delivery']['enabled'] ?? false);
         $settings['delivery']['require_delivery_address'] = (bool) ($settings['delivery']['require_delivery_address'] ?? true);
         $settings['delivery']['require_delivery_datetime'] = (bool) ($settings['delivery']['require_delivery_datetime'] ?? true);

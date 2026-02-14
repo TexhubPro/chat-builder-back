@@ -167,6 +167,38 @@ class Assistant
     }
 
     /**
+     * Delete a thread.
+     */
+    public function deleteThread(string $threadId): bool
+    {
+        if ($threadId === '') {
+            $this->logError('OpenAI thread delete failed', [
+                'error' => 'Missing thread id.',
+            ]);
+
+            return false;
+        }
+
+        try {
+            $response = $this->http()
+                ->delete($this->endpoint('/threads/' . $threadId));
+
+            $data = $this->parseJsonResponse($response, 'OpenAI thread delete failed', [
+                'thread_id' => $threadId,
+            ]);
+
+            return (bool) ($data['deleted'] ?? false);
+        } catch (Throwable $exception) {
+            $this->logError('OpenAI thread delete failed', [
+                'error' => $exception->getMessage(),
+                'thread_id' => $threadId,
+            ]);
+
+            return false;
+        }
+    }
+
+    /**
      * Create a message in a thread and return only its id on success.
      *
      * @param string $threadId

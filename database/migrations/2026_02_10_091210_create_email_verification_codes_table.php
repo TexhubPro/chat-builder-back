@@ -15,8 +15,9 @@ return new class extends Migration
             $table->id();
             $table->foreignId('user_id')->unique()->constrained()->cascadeOnDelete();
             $table->string('code_hash');
-            $table->timestamp('expires_at')->index();
-            $table->timestamp('sent_at');
+            // Use DATETIME to avoid legacy MySQL TIMESTAMP default restrictions.
+            $table->dateTime('expires_at')->index();
+            $table->dateTime('sent_at');
             $table->unsignedTinyInteger('attempts')->default(0);
             $table->unsignedTinyInteger('max_attempts')->default(4);
             $table->timestamps();

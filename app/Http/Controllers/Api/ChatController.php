@@ -15,10 +15,12 @@ use App\Models\CompanyClientQuestion;
 use App\Models\CompanyClientTask;
 use App\Models\User;
 use App\Services\CompanySubscriptionService;
+use App\Services\OpenAiAssistantService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
+use TexHub\OpenAi\Assistant as OpenAiAssistantClient;
 
 class ChatController extends Controller
 {
@@ -460,6 +462,85 @@ class ChatController extends Controller
         return response()->json([
             'message' => 'Chat marked as read.',
             'chat' => $this->chatPayload($chat->refresh()),
+        ]);
+    }
+
+    public function resetAssistantChat(Request $request, int $chatId): JsonResponse
+    {
+        $user = $this->resolveUser($request);
+        $company = $this->resolveCompany($user);
+        $chat = $this->resolveChat($company, $chatId);
+
+        if ($chat->channel !== 'assistant' || ! $chat->assistant_id) {
+            return response()->json([
+                'message' => 'Only assistant chats can be reset.',
+            ], 422);
+        }
+
+        /** @var Assistant|null $assistant */
+        $assistant = $company->assistants()
+            ->whereKey((int) $chat->assistant_id)
+            ->first();
+
+        if (! $assistant) {
+            return response()->json([
+                'message' => 'Assistant not found for this chat.',
+            ], 422);
+        }
+
+        $metadata = is_array($chat->metadata) ? $chat->metadata : [];
+        $threadMap = is_array($metadata['openai_threads'] ?? null)
+            ? $metadata['openai_threads']
+            : [];
+
+        $threadKey = (string) $assistant->id;
+        $oldThreadId = trim((string) ($threadMap[$threadKey] ?? ''));
+        $oldThreadDeleted = null;
+
+        if ($oldThreadId !== '' && $this->openAiAssistantService()->isConfigured()) {
+            $oldThreadDeleted = $this->openAiClient()->deleteThread($oldThreadId);
+        }
+
+        unset($threadMap[$threadKey]);
+
+        if ($threadMap === []) {
+            unset($metadata['openai_threads']);
+        } else {
+            $metadata['openai_threads'] = $threadMap;
+        }
+
+        $newThreadId = null;
+
+        if ($this->openAiAssistantService()->isConfigured()) {
+            $newThreadId = trim((string) ($this->openAiClient()->createThread([], [
+                'chat_id' => (string) $chat->id,
+                'company_id' => (string) $chat->company_id,
+                'assistant_id' => (string) $assistant->id,
+            ]) ?? ''));
+
+            if ($newThreadId !== '') {
+                $threadMap[$threadKey] = $newThreadId;
+                $metadata['openai_threads'] = $threadMap;
+            }
+        }
+
+        $chat->messages()->delete();
+
+        $chat->forceFill([
+            'metadata' => $metadata,
+            'last_message_preview' => null,
+            'last_message_at' => null,
+            'unread_count' => 0,
+        ])->save();
+
+        return response()->json([
+            'message' => 'Assistant chat has been reset.',
+            'chat' => $this->chatPayload($chat->refresh()),
+            'reset' => [
+                'old_thread_id' => $oldThreadId !== '' ? $oldThreadId : null,
+                'old_thread_deleted' => $oldThreadDeleted,
+                'new_thread_id' => $newThreadId !== '' ? $newThreadId : null,
+            ],
         ]);
     }
 
@@ -1400,5 +1481,15 @@ class ChatController extends Controller
     private function subscriptionService(): CompanySubscriptionService
     {
         return app(CompanySubscriptionService::class);
+    }
+
+    private function openAiAssistantService(): OpenAiAssistantService
+    {
+        return app(OpenAiAssistantService::class);
+    }
+
+    private function openAiClient(): OpenAiAssistantClient
+    {
+        return app(OpenAiAssistantClient::class);
     }
 }

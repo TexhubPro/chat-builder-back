@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\ChatController;
 use App\Http\Controllers\Api\ChatMessageController;
 use App\Http\Controllers\Api\CompanyController;
+use App\Http\Controllers\Api\CompanyClientController;
 use App\Http\Controllers\Api\CompanyClientOrderController;
 use App\Http\Controllers\Api\CompanySubscriptionController;
 use App\Http\Controllers\Api\InstagramIntegrationController;
@@ -60,6 +61,13 @@ Route::prefix('client-requests')
         Route::delete('/{orderId}', [CompanyClientOrderController::class, 'destroy'])->whereNumber('orderId');
     });
 
+Route::prefix('client-base')
+    ->middleware([EnsureUserIsActive::class])
+    ->group(function (): void {
+        Route::get('/', [CompanyClientController::class, 'index']);
+        Route::get('/{clientId}', [CompanyClientController::class, 'show'])->whereNumber('clientId');
+    });
+
 Route::post('/billing/alif/callback', [InvoiceController::class, 'alifCallback'])
     ->name('api.billing.alif.callback');
 
@@ -110,6 +118,7 @@ Route::prefix('chats')
         Route::get('/{chatId}', [ChatController::class, 'show'])->whereNumber('chatId');
         Route::get('/{chatId}/insights', [ChatController::class, 'insights'])->whereNumber('chatId');
         Route::patch('/{chatId}/ai-enabled', [ChatController::class, 'updateAiEnabled'])->whereNumber('chatId');
+        Route::post('/{chatId}/reset', [ChatController::class, 'resetAssistantChat'])->whereNumber('chatId');
         Route::post('/{chatId}/read', [ChatController::class, 'markAsRead'])->whereNumber('chatId');
         Route::post('/{chatId}/messages', [ChatMessageController::class, 'store'])->whereNumber('chatId');
         Route::post('/{chatId}/tasks', [ChatController::class, 'createTask'])->whereNumber('chatId');
