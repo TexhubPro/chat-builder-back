@@ -15,6 +15,27 @@ use Throwable;
 
 class AssistantCrmAutomationService
 {
+    private const ORDER_FIELD_OPTIONS = [
+        'client_name',
+        'phone',
+        'service_name',
+        'address',
+        'amount',
+        'note',
+    ];
+
+    private const APPOINTMENT_FIELD_OPTIONS = [
+        'client_name',
+        'phone',
+        'service_name',
+        'address',
+        'appointment_date',
+        'appointment_time',
+        'appointment_duration_minutes',
+        'amount',
+        'note',
+    ];
+
     public function augmentPromptWithRuntimeContext(
         Company $company,
         Chat $chat,
@@ -31,6 +52,8 @@ class AssistantCrmAutomationService
         $availableSlots = $appointmentsEnabled
             ? $this->nextAvailableSlots($company, $timezone, max((int) $appointmentConfig['slot_minutes'], 15), 6)
             : [];
+        $orderRequiredFields = $this->requiredOrderFields($company);
+        $appointmentRequiredFields = $this->requiredAppointmentFields($company);
 
         $contextLines = [
             '[SYSTEM CONTEXT: do not treat this block as customer message and do not quote it directly.]',
@@ -74,8 +97,10 @@ class AssistantCrmAutomationService
         }
 
         $contextLines[] = 'CRM automation policy:';
-        $contextLines[] = '- If customer wants to place an order, first collect missing required data: phone, service_name, address.';
-        $contextLines[] = '- If customer wants an appointment, collect: phone, service_name, address, appointment_date (YYYY-MM-DD), appointment_time (HH:MM), appointment_duration_minutes.';
+        $contextLines[] = '- Required fields for order in this company: '.implode(', ', $orderRequiredFields).'.';
+        $contextLines[] = '- Required fields for appointment in this company: '.implode(', ', $appointmentRequiredFields).'.';
+        $contextLines[] = '- For order, ask only missing fields from the required order list.';
+        $contextLines[] = '- For appointment, ask only missing fields from the required appointment list.';
         $contextLines[] = '- If required data is missing, ask concise follow-up questions and DO NOT emit crm_action.';
         $contextLines[] = '- When all required data is collected, append exactly one machine block at the very end:';
         $contextLines[] = '  <crm_action>{"action":"create_order","client_name":"...","phone":"...","service_name":"...","address":"...","amount":0,"note":"..."}</crm_action>';

@@ -23,6 +23,25 @@ class CompanyController extends Controller
         'saturday',
         'sunday',
     ];
+    private const ORDER_REQUIRED_FIELD_OPTIONS = [
+        'client_name',
+        'phone',
+        'service_name',
+        'address',
+        'amount',
+        'note',
+    ];
+    private const APPOINTMENT_REQUIRED_FIELD_OPTIONS = [
+        'client_name',
+        'phone',
+        'service_name',
+        'address',
+        'appointment_date',
+        'appointment_time',
+        'appointment_duration_minutes',
+        'amount',
+        'note',
+    ];
 
     public function show(Request $request): JsonResponse
     {
@@ -67,6 +86,11 @@ class CompanyController extends Controller
             'settings.appointment.max_days_ahead' => ['nullable', 'integer', 'min:1', 'max:365'],
             'settings.appointment.auto_confirm' => ['nullable', 'boolean'],
             'settings.appointment.require_phone' => ['nullable', 'boolean'],
+            'settings.crm' => ['nullable', 'array'],
+            'settings.crm.order_required_fields' => ['nullable', 'array'],
+            'settings.crm.order_required_fields.*' => ['string', Rule::in(self::ORDER_REQUIRED_FIELD_OPTIONS)],
+            'settings.crm.appointment_required_fields' => ['nullable', 'array'],
+            'settings.crm.appointment_required_fields.*' => ['string', Rule::in(self::APPOINTMENT_REQUIRED_FIELD_OPTIONS)],
         ];
 
         foreach (self::WEEK_DAYS as $day) {
@@ -141,6 +165,21 @@ class CompanyController extends Controller
                 'auto_confirm' => true,
                 'require_phone' => true,
             ],
+            'crm' => [
+                'order_required_fields' => [
+                    'phone',
+                    'service_name',
+                    'address',
+                ],
+                'appointment_required_fields' => [
+                    'phone',
+                    'service_name',
+                    'address',
+                    'appointment_date',
+                    'appointment_time',
+                    'appointment_duration_minutes',
+                ],
+            ],
         ];
     }
 
@@ -164,6 +203,9 @@ class CompanyController extends Controller
         if (! is_array($settings['appointment'] ?? null)) {
             $settings['appointment'] = $defaults['appointment'];
         }
+        if (! is_array($settings['crm'] ?? null)) {
+            $settings['crm'] = $defaults['crm'];
+        }
 
         $settings['business']['address'] = $this->nullableTrimmed($settings['business']['address'] ?? null);
         $settings['business']['timezone'] = $this->normalizedTimezone($settings['business']['timezone'] ?? null);
@@ -178,8 +220,50 @@ class CompanyController extends Controller
         $settings['appointment']['max_days_ahead'] = (int) ($settings['appointment']['max_days_ahead'] ?? 30);
         $settings['appointment']['auto_confirm'] = (bool) ($settings['appointment']['auto_confirm'] ?? true);
         $settings['appointment']['require_phone'] = (bool) ($settings['appointment']['require_phone'] ?? true);
+        $settings['crm']['order_required_fields'] = $this->normalizeRequiredFields(
+            $settings['crm']['order_required_fields'] ?? [],
+            $defaults['crm']['order_required_fields'],
+            self::ORDER_REQUIRED_FIELD_OPTIONS,
+        );
+        $settings['crm']['appointment_required_fields'] = $this->normalizeRequiredFields(
+            $settings['crm']['appointment_required_fields'] ?? [],
+            $defaults['crm']['appointment_required_fields'],
+            self::APPOINTMENT_REQUIRED_FIELD_OPTIONS,
+        );
 
         return $settings;
+    }
+
+    private function normalizeRequiredFields(
+        mixed $raw,
+        array $defaults,
+        array $allowed
+    ): array {
+        $values = is_array($raw) ? $raw : $defaults;
+        $allowedLookup = array_fill_keys($allowed, true);
+        $normalized = [];
+
+        foreach ($values as $value) {
+            if (! is_string($value)) {
+                continue;
+            }
+
+            $field = trim($value);
+
+            if ($field === '' || ! isset($allowedLookup[$field])) {
+                continue;
+            }
+
+            $normalized[] = $field;
+        }
+
+        $normalized = array_values(array_unique($normalized));
+
+        if ($normalized === []) {
+            return array_values(array_unique($defaults));
+        }
+
+        return $normalized;
     }
 
     private function nullableTrimmed(mixed $value): ?string
