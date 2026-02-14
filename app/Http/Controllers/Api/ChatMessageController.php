@@ -10,6 +10,7 @@ use App\Models\ChatMessage;
 use App\Models\Company;
 use App\Models\User;
 use App\Services\CompanySubscriptionService;
+use App\Services\AssistantCrmAutomationService;
 use App\Services\InstagramTokenService;
 use App\Services\OpenAiAssistantService;
 use App\Services\TelegramBotApiService;
@@ -185,6 +186,7 @@ class ChatMessageController extends Controller
 
             $assistantPrompt = $this->buildPromptFromChatMessage($message);
             $assistantResponse = $this->generateAssistantResponse(
+                $company,
                 $assistantForAutoReply,
                 $chat,
                 $assistantPrompt,
@@ -273,7 +275,7 @@ class ChatMessageController extends Controller
 
         $this->subscriptionService()->incrementChatUsage($company, 1);
 
-        $responseText = $this->generateAssistantResponse($assistant, $chat, $prompt);
+        $responseText = $this->generateAssistantResponse($company, $assistant, $chat, $prompt);
 
         $assistantMessage = ChatMessage::query()->create([
             'user_id' => $company->user_id,
@@ -342,6 +344,7 @@ class ChatMessageController extends Controller
     }
 
     private function generateAssistantResponse(
+        Company $company,
         AssistantModel $assistant,
         Chat $chat,
         string $prompt,
@@ -369,6 +372,13 @@ class ChatMessageController extends Controller
             return $this->fallbackAssistantText($assistant, $prompt);
         }
 
+        $runtimePrompt = $this->assistantCrmAutomationService()->augmentPromptWithRuntimeContext(
+            $company,
+            $chat,
+            $assistant,
+            $prompt,
+        );
+
         $chatMetadata = is_array($chat->metadata) ? $chat->metadata : [];
         $threadMap = is_array($chatMetadata['openai_threads'] ?? null)
             ? $chatMetadata['openai_threads']
@@ -389,7 +399,7 @@ class ChatMessageController extends Controller
             $threadId,
             $assistant,
             $chat,
-            $prompt,
+            $runtimePrompt,
             $incomingMessage,
             $uploadedAbsolutePath,
         );
@@ -402,7 +412,7 @@ class ChatMessageController extends Controller
                     $recoveryThreadId,
                     $assistant,
                     $chat,
-                    $prompt,
+                    $runtimePrompt,
                     $incomingMessage,
                     $uploadedAbsolutePath,
                 );
@@ -424,6 +434,17 @@ class ChatMessageController extends Controller
         $normalized = $this->runAssistantThread($threadId, $openAiAssistantId);
 
         if ($normalized !== '') {
+            $normalized = $this->assistantCrmAutomationService()->applyActionsFromAssistantResponse(
+                $company,
+                $chat,
+                $assistant,
+                $normalized,
+            );
+
+            if (trim($normalized) === '') {
+                return $this->fallbackAssistantText($assistant, $prompt);
+            }
+
             return $normalized;
         }
 
@@ -434,7 +455,7 @@ class ChatMessageController extends Controller
                 $recoveryThreadId,
                 $assistant,
                 $chat,
-                $prompt,
+                $runtimePrompt,
                 $incomingMessage,
                 $uploadedAbsolutePath,
             );
@@ -443,7 +464,16 @@ class ChatMessageController extends Controller
                 $retryNormalized = $this->runAssistantThread($recoveryThreadId, $openAiAssistantId);
 
                 if ($retryNormalized !== '') {
-                    return $retryNormalized;
+                    $retryNormalized = $this->assistantCrmAutomationService()->applyActionsFromAssistantResponse(
+                        $company,
+                        $chat,
+                        $assistant,
+                        $retryNormalized,
+                    );
+
+                    if (trim($retryNormalized) !== '') {
+                        return $retryNormalized;
+                    }
                 }
             }
         }
@@ -1400,5 +1430,10 @@ class ChatMessageController extends Controller
     private function instagramTokenService(): InstagramTokenService
     {
         return app(InstagramTokenService::class);
+    }
+
+    private function assistantCrmAutomationService(): AssistantCrmAutomationService
+    {
+        return app(AssistantCrmAutomationService::class);
     }
 }

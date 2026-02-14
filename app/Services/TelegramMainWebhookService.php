@@ -20,6 +20,7 @@ class TelegramMainWebhookService
         private OpenAiAssistantService $openAiAssistantService,
         private OpenAiAssistantClient $openAiClient,
         private TelegramBotApiService $telegramBotApiService,
+        private AssistantCrmAutomationService $assistantCrmAutomationService,
     ) {}
 
     public function processUpdate(AssistantChannel $assistantChannel, array $update): void
@@ -122,7 +123,7 @@ class TelegramMainWebhookService
         }
 
         $prompt = $this->buildPromptFromInboundParts($parts);
-        $assistantResponse = $this->generateAssistantResponse($assistant, $chat, $prompt, $parts);
+        $assistantResponse = $this->generateAssistantResponse($company, $assistant, $chat, $prompt, $parts);
 
         if ($assistantResponse === null || trim($assistantResponse) === '') {
             return;
@@ -650,6 +651,7 @@ class TelegramMainWebhookService
     }
 
     private function generateAssistantResponse(
+        Company $company,
         Assistant $assistant,
         Chat $chat,
         string $prompt,
@@ -669,6 +671,13 @@ class TelegramMainWebhookService
         if ($openAiAssistantId === '') {
             return $this->fallbackAssistantText($assistant, $prompt);
         }
+
+        $runtimePrompt = $this->assistantCrmAutomationService->augmentPromptWithRuntimeContext(
+            $company,
+            $chat,
+            $assistant,
+            $prompt,
+        );
 
         $chatMetadata = is_array($chat->metadata) ? $chat->metadata : [];
         $threadMap = is_array($chatMetadata['openai_threads'] ?? null)
@@ -714,7 +723,7 @@ class TelegramMainWebhookService
             $messageId = $this->openAiClient->sendImageUrlMessage(
                 $threadId,
                 $imageUrls,
-                $prompt,
+                $runtimePrompt,
                 'auto',
                 [
                     'chat_id' => (string) $chat->id,
@@ -727,7 +736,7 @@ class TelegramMainWebhookService
         if (! is_string($messageId) || trim($messageId) === '') {
             $messageId = $this->openAiClient->sendTextMessage(
                 $threadId,
-                $prompt,
+                $runtimePrompt,
                 [
                     'chat_id' => (string) $chat->id,
                     'assistant_id' => (string) $assistant->id,
@@ -749,8 +758,18 @@ class TelegramMainWebhookService
         );
 
         $normalized = trim((string) ($responseText ?? ''));
+        if ($normalized === '') {
+            return $this->fallbackAssistantText($assistant, $prompt);
+        }
 
-        return $normalized === '' ? $this->fallbackAssistantText($assistant, $prompt) : $normalized;
+        $normalized = $this->assistantCrmAutomationService->applyActionsFromAssistantResponse(
+            $company,
+            $chat,
+            $assistant,
+            $normalized,
+        );
+
+        return trim($normalized) === '' ? $this->fallbackAssistantText($assistant, $prompt) : $normalized;
     }
 
     private function fallbackAssistantText(Assistant $assistant, string $prompt): string

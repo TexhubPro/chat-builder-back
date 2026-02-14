@@ -15,6 +15,7 @@ use App\Models\SubscriptionPlan;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 use Mockery\MockInterface;
@@ -836,6 +837,172 @@ test('chat api can generate assistant reply and store thread metadata', function
     expect(
         ChatMessage::query()->where('chat_id', $chat->id)->count()
     )->toBe(2);
+});
+
+test('chat api assistant reply can auto-create client request from crm action block', function () {
+    [$user, $company, $token] = chatApiContext();
+
+    config()->set('openai.assistant.api_key', 'test-openai-key');
+
+    $assistant = Assistant::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'name' => 'CRM Assistant',
+        'openai_assistant_id' => 'asst_crm_action_1',
+        'is_active' => true,
+    ]);
+
+    $chat = Chat::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'assistant_id' => $assistant->id,
+        'channel' => 'assistant',
+        'channel_chat_id' => 'assistant-crm-action-1',
+        'channel_user_id' => 'assistant-crm-customer-1',
+        'name' => 'CRM Customer',
+        'metadata' => [],
+    ]);
+
+    $this->mock(OpenAiAssistantClient::class, function (MockInterface $mock): void {
+        $mock->shouldReceive('createThread')->once()->andReturn('thread_crm_action_1');
+        $mock->shouldReceive('sendTextMessage')
+            ->once()
+            ->withArgs(function (...$args): bool {
+                $threadId = (string) ($args[0] ?? '');
+                $prompt = (string) ($args[1] ?? '');
+
+                return $threadId === 'thread_crm_action_1'
+                    && str_contains($prompt, 'Current UTC datetime:')
+                    && str_contains($prompt, 'CRM automation policy:');
+            })
+            ->andReturn('message_crm_action_1');
+        $mock->shouldReceive('runThreadAndGetResponse')
+            ->once()
+            ->andReturn('Готово! <crm_action>{"action":"create_order","client_name":"Икром","phone":"+992900111222","service_name":"Консультация","address":"Душанбе","amount":45,"note":"срочно"}</crm_action>');
+    });
+
+    $this
+        ->withHeader('Authorization', "Bearer {$token}")
+        ->postJson('/api/chats/'.$chat->id.'/assistant-reply', [
+            'assistant_id' => $assistant->id,
+            'prompt' => 'Мне нужна консультация.',
+        ])
+        ->assertCreated()
+        ->assertJsonPath('assistant_message.text', 'Готово!');
+
+    $client = CompanyClient::query()
+        ->where('company_id', $company->id)
+        ->where('phone', '+992900111222')
+        ->first();
+
+    expect($client)->not->toBeNull();
+    expect((string) $client?->name)->toBe('Икром');
+
+    $order = CompanyClientOrder::query()
+        ->where('company_id', $company->id)
+        ->where('company_client_id', $client?->id)
+        ->latest('id')
+        ->first();
+
+    expect($order)->not->toBeNull();
+    expect((string) $order?->service_name)->toBe('Консультация');
+    expect((string) $order?->status)->toBe(CompanyClientOrder::STATUS_NEW);
+    expect((int) data_get($order?->metadata, 'chat_id'))->toBe($chat->id);
+});
+
+test('chat api assistant reply can auto-create appointment request from crm action block', function () {
+    [$user, $company, $token] = chatApiContext();
+
+    config()->set('openai.assistant.api_key', 'test-openai-key');
+
+    $timezone = 'Asia/Dushanbe';
+    $schedule = [
+        'monday' => ['is_day_off' => false, 'start_time' => '09:00', 'end_time' => '18:00'],
+        'tuesday' => ['is_day_off' => false, 'start_time' => '09:00', 'end_time' => '18:00'],
+        'wednesday' => ['is_day_off' => false, 'start_time' => '09:00', 'end_time' => '18:00'],
+        'thursday' => ['is_day_off' => false, 'start_time' => '09:00', 'end_time' => '18:00'],
+        'friday' => ['is_day_off' => false, 'start_time' => '09:00', 'end_time' => '18:00'],
+        'saturday' => ['is_day_off' => false, 'start_time' => '09:00', 'end_time' => '18:00'],
+        'sunday' => ['is_day_off' => false, 'start_time' => '09:00', 'end_time' => '18:00'],
+    ];
+
+    $company->forceFill([
+        'settings' => [
+            'account_type' => 'with_appointments',
+            'business' => [
+                'timezone' => $timezone,
+                'schedule' => $schedule,
+            ],
+            'appointment' => [
+                'enabled' => true,
+                'slot_minutes' => 30,
+                'buffer_minutes' => 0,
+                'max_days_ahead' => 30,
+                'auto_confirm' => true,
+                'require_phone' => true,
+            ],
+        ],
+    ])->save();
+
+    $assistant = Assistant::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'name' => 'Booking Assistant',
+        'openai_assistant_id' => 'asst_booking_action_1',
+        'is_active' => true,
+    ]);
+
+    $chat = Chat::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'assistant_id' => $assistant->id,
+        'channel' => 'assistant',
+        'channel_chat_id' => 'assistant-booking-action-1',
+        'channel_user_id' => 'assistant-booking-customer-1',
+        'name' => 'Booking Customer',
+        'metadata' => [],
+    ]);
+
+    $appointmentDate = Carbon::now($timezone)->addDays(1)->format('Y-m-d');
+
+    $this->mock(OpenAiAssistantClient::class, function (MockInterface $mock) use ($appointmentDate): void {
+        $mock->shouldReceive('createThread')->once()->andReturn('thread_booking_action_1');
+        $mock->shouldReceive('sendTextMessage')->once()->andReturn('message_booking_action_1');
+        $mock->shouldReceive('runThreadAndGetResponse')
+            ->once()
+            ->andReturn('Записал вас. <crm_action>{"action":"create_appointment","client_name":"Фарид","phone":"+992900333444","service_name":"Осмотр","address":"Худжанд","appointment_date":"'.$appointmentDate.'","appointment_time":"11:30","appointment_duration_minutes":60,"amount":0,"note":"впервые"}</crm_action>');
+    });
+
+    $this
+        ->withHeader('Authorization', "Bearer {$token}")
+        ->postJson('/api/chats/'.$chat->id.'/assistant-reply', [
+            'assistant_id' => $assistant->id,
+            'prompt' => 'Хочу записаться на завтра.',
+        ])
+        ->assertCreated()
+        ->assertJsonPath('assistant_message.text', 'Записал вас.');
+
+    $client = CompanyClient::query()
+        ->where('company_id', $company->id)
+        ->where('phone', '+992900333444')
+        ->first();
+
+    expect($client)->not->toBeNull();
+
+    $order = CompanyClientOrder::query()
+        ->where('company_id', $company->id)
+        ->where('company_client_id', $client?->id)
+        ->latest('id')
+        ->first();
+
+    expect($order)->not->toBeNull();
+    expect((string) $order?->status)->toBe(CompanyClientOrder::STATUS_APPOINTMENTS);
+    expect(data_get($order?->metadata, 'appointment.calendar_event_id'))->not->toBeNull();
+
+    $calendarEventId = (int) data_get($order?->metadata, 'appointment.calendar_event_id', 0);
+    $event = CompanyCalendarEvent::query()->find($calendarEventId);
+    expect($event)->not->toBeNull();
+    expect((string) $event?->timezone)->toBe($timezone);
 });
 
 test('chat api can toggle ai replies per chat', function () {
