@@ -9,6 +9,8 @@ use App\Models\ChatMessage;
 use App\Models\Company;
 use App\Models\User;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use TexHub\OpenAi\Assistant as OpenAiAssistantClient;
 use Throwable;
@@ -706,23 +708,13 @@ class TelegramMainWebhookService
             ])->save();
         }
 
-        $imageUrls = [];
-        foreach ($parts as $part) {
-            if (($part['message_type'] ?? '') === ChatMessage::TYPE_IMAGE) {
-                $url = trim((string) ($part['media_url'] ?? ''));
-
-                if ($url !== '' && Str::startsWith($url, ['http://', 'https://'])) {
-                    $imageUrls[] = $url;
-                }
-            }
-        }
-
         $messageId = null;
+        $imageFileIds = $this->uploadWebhookImagesToOpenAi($parts, 'telegram');
 
-        if ($imageUrls !== []) {
-            $messageId = $this->openAiClient->sendImageUrlMessage(
+        if ($imageFileIds !== []) {
+            $messageId = $this->openAiClient->sendImageFileMessage(
                 $threadId,
-                $imageUrls,
+                $imageFileIds,
                 $runtimePrompt,
                 'auto',
                 [
@@ -731,6 +723,33 @@ class TelegramMainWebhookService
                 ],
                 'user',
             );
+        }
+
+        if (! is_string($messageId) || trim($messageId) === '') {
+            $imageUrls = [];
+            foreach ($parts as $part) {
+                if (($part['message_type'] ?? '') === ChatMessage::TYPE_IMAGE) {
+                    $url = trim((string) ($part['media_url'] ?? ''));
+
+                    if ($url !== '' && Str::startsWith($url, ['http://', 'https://'])) {
+                        $imageUrls[] = $url;
+                    }
+                }
+            }
+
+            if ($imageUrls !== []) {
+                $messageId = $this->openAiClient->sendImageUrlMessage(
+                    $threadId,
+                    $imageUrls,
+                    $runtimePrompt,
+                    'auto',
+                    [
+                        'chat_id' => (string) $chat->id,
+                        'assistant_id' => (string) $assistant->id,
+                    ],
+                    'user',
+                );
+            }
         }
 
         if (! is_string($messageId) || trim($messageId) === '') {
@@ -770,6 +789,98 @@ class TelegramMainWebhookService
         );
 
         return trim($normalized) === '' ? $this->fallbackAssistantText($assistant, $prompt) : $normalized;
+    }
+
+    private function uploadWebhookImagesToOpenAi(array $parts, string $source): array
+    {
+        $fileIds = [];
+        $index = 0;
+
+        foreach ($parts as $part) {
+            if (($part['message_type'] ?? '') !== ChatMessage::TYPE_IMAGE) {
+                continue;
+            }
+
+            $url = trim((string) ($part['media_url'] ?? ''));
+            if ($url === '' || ! Str::startsWith($url, ['http://', 'https://'])) {
+                continue;
+            }
+
+            $localPath = $this->downloadWebhookImageToLocal($url, $source, $index);
+            $index += 1;
+
+            if ($localPath === null) {
+                continue;
+            }
+
+            $fileId = $this->openAiClient->uploadFile($localPath, 'vision');
+            if (is_string($fileId) && trim($fileId) !== '') {
+                $fileIds[] = trim($fileId);
+            }
+        }
+
+        return array_values(array_unique($fileIds));
+    }
+
+    private function downloadWebhookImageToLocal(string $url, string $source, int $index): ?string
+    {
+        try {
+            $response = Http::timeout(20)
+                ->accept('image/*')
+                ->get($url);
+        } catch (Throwable) {
+            return null;
+        }
+
+        if (! $response->successful()) {
+            return null;
+        }
+
+        $body = $response->body();
+        if (! is_string($body) || $body === '') {
+            return null;
+        }
+
+        $extension = $this->detectImageExtensionFromResponse($response->header('Content-Type'), $url);
+        $relativePath = 'chat-files/webhook-media/'.$source.'/'
+            .now()->format('Y/m/d').'/'
+            .now()->format('His').'-'.$index.'-'.Str::random(24).'.'.$extension;
+
+        Storage::disk('public')->put($relativePath, $body);
+
+        return Storage::disk('public')->path($relativePath);
+    }
+
+    private function detectImageExtensionFromResponse(?string $contentType, string $url): string
+    {
+        $normalizedType = Str::lower(trim((string) ($contentType ?? '')));
+
+        $known = [
+            'image/jpeg' => 'jpg',
+            'image/jpg' => 'jpg',
+            'image/png' => 'png',
+            'image/webp' => 'webp',
+            'image/gif' => 'gif',
+            'image/bmp' => 'bmp',
+            'image/tiff' => 'tiff',
+            'image/avif' => 'avif',
+            'image/heic' => 'heic',
+            'image/heif' => 'heif',
+        ];
+
+        foreach ($known as $mime => $extension) {
+            if (Str::startsWith($normalizedType, $mime)) {
+                return $extension;
+            }
+        }
+
+        $path = (string) parse_url($url, PHP_URL_PATH);
+        $candidate = Str::lower(pathinfo($path, PATHINFO_EXTENSION));
+        if (in_array($candidate, ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'tif', 'tiff', 'avif', 'heic', 'heif'], true)) {
+            return $candidate === 'jpeg' ? 'jpg' : ($candidate === 'tif' ? 'tiff' : $candidate);
+        }
+
+        return 'jpg';
     }
 
     private function fallbackAssistantText(Assistant $assistant, string $prompt): string

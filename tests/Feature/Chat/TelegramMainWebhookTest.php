@@ -10,6 +10,7 @@ use App\Models\SubscriptionPlan;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Storage;
 use Mockery\MockInterface;
 use TexHub\OpenAi\Assistant as OpenAiAssistantClient;
 
@@ -175,6 +176,76 @@ test('telegram webhook stores chat and sends assistant reply when conditions are
     expect((int) $subscription->chat_count_current_period)->toBe(1);
 });
 
+test('telegram webhook downloads inbound photo and sends it to openai as vision file', function () {
+    [, $company, , $assistantChannel] = telegramWebhookContext();
+    Storage::fake('public');
+
+    config()->set('services.telegram.bot_api_base', 'https://api.telegram.org');
+    config()->set('services.telegram.auto_reply_enabled', true);
+    config()->set('openai.assistant.api_key', 'test-openai-key');
+
+    $this->mock(OpenAiAssistantClient::class, function (MockInterface $mock): void {
+        $mock->shouldReceive('createThread')->once()->andReturn('thread_telegram_photo_1');
+        $mock->shouldReceive('uploadFile')
+            ->once()
+            ->with(\Mockery::type('string'), 'vision')
+            ->andReturn('file_telegram_photo_1');
+        $mock->shouldReceive('sendImageFileMessage')->once()->andReturn('message_telegram_photo_1');
+        $mock->shouldReceive('runThreadAndGetResponse')->once()->andReturn('Фото получено, спасибо.');
+    });
+
+    Http::fake([
+        'https://api.telegram.org/bottelegram-token/getFile' => Http::response([
+            'ok' => true,
+            'result' => [
+                'file_path' => 'photos/test-photo.jpg',
+            ],
+        ], 200),
+        'https://api.telegram.org/file/bottelegram-token/photos/test-photo.jpg' => Http::response(
+            'fake-image-binary-content',
+            200,
+            ['Content-Type' => 'image/jpeg']
+        ),
+        'https://api.telegram.org/bottelegram-token/sendMessage' => Http::response([
+            'ok' => true,
+            'result' => [
+                'message_id' => 9002,
+            ],
+        ], 200),
+    ]);
+
+    $this
+        ->withHeader('X-Telegram-Bot-Api-Secret-Token', 'tg-secret-123')
+        ->postJson('/api/integrations/telegram/webhook/'.$assistantChannel->id, telegramWebhookPayload([
+            'message_id' => 1004,
+            'photo' => [
+                ['file_id' => 'tg_file_1', 'width' => 90, 'height' => 90],
+                ['file_id' => 'tg_file_2', 'width' => 640, 'height' => 640],
+            ],
+        ]))
+        ->assertOk()
+        ->assertJsonPath('ok', true);
+
+    $chat = Chat::query()->where('company_id', $company->id)->where('channel', 'telegram')->firstOrFail();
+
+    $this->assertDatabaseHas('chat_messages', [
+        'chat_id' => $chat->id,
+        'sender_type' => ChatMessage::SENDER_CUSTOMER,
+        'direction' => ChatMessage::DIRECTION_INBOUND,
+        'message_type' => ChatMessage::TYPE_IMAGE,
+        'channel_message_id' => '1004:photo',
+    ]);
+
+    $this->assertDatabaseHas('chat_messages', [
+        'chat_id' => $chat->id,
+        'sender_type' => ChatMessage::SENDER_ASSISTANT,
+        'direction' => ChatMessage::DIRECTION_OUTBOUND,
+        'message_type' => ChatMessage::TYPE_TEXT,
+        'channel_message_id' => '9002',
+        'text' => 'Фото получено, спасибо.',
+    ]);
+});
+
 test('telegram webhook stores inbound message without assistant reply when channel is inactive', function () {
     [, $company, , $assistantChannel] = telegramWebhookContext();
 
@@ -254,4 +325,3 @@ test('telegram webhook appends repeated message id into same chat', function () 
     expect($inboundMessages[0]->channel_message_id)->toBe('1003:text');
     expect($inboundMessages[1]->channel_message_id)->toBe('1003:text-1710000000000');
 });
-
