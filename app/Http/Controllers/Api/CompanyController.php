@@ -50,6 +50,14 @@ class CompanyController extends Controller
         'tr',
         'fa',
     ];
+    private const BUSINESS_CURRENCY_OPTIONS = [
+        'TJS',
+        'USD',
+        'EUR',
+        'RUB',
+        'UZS',
+        'KZT',
+    ];
 
     public function show(Request $request): JsonResponse
     {
@@ -87,6 +95,7 @@ class CompanyController extends Controller
                 'string',
                 Rule::in(timezone_identifiers_list()),
             ],
+            'settings.business.currency' => ['nullable', 'string', Rule::in(self::BUSINESS_CURRENCY_OPTIONS)],
             'settings.business.schedule' => ['nullable', 'array'],
             'settings.appointment' => ['nullable', 'array'],
             'settings.appointment.slot_minutes' => ['nullable', 'integer', Rule::in([15, 30, 45, 60, 90, 120])],
@@ -175,6 +184,7 @@ class CompanyController extends Controller
             'business' => [
                 'address' => null,
                 'timezone' => (string) config('app.timezone', 'UTC'),
+                'currency' => 'TJS',
                 'schedule' => $this->defaultBusinessSchedule(),
             ],
             'appointment' => [
@@ -254,6 +264,7 @@ class CompanyController extends Controller
 
         $settings['business']['address'] = $this->nullableTrimmed($settings['business']['address'] ?? null);
         $settings['business']['timezone'] = $this->normalizedTimezone($settings['business']['timezone'] ?? null);
+        $settings['business']['currency'] = $this->normalizedCurrency($settings['business']['currency'] ?? null);
         $settings['business']['schedule'] = $this->normalizeBusinessSchedule(
             $settings['business']['schedule'] ?? [],
             $defaults['business']['schedule'],
@@ -405,6 +416,21 @@ class CompanyController extends Controller
         }
 
         return $timezone;
+    }
+
+    private function normalizedCurrency(mixed $value): string
+    {
+        if (! is_string($value)) {
+            return 'TJS';
+        }
+
+        $currency = strtoupper(trim($value));
+
+        if ($currency === '' || ! in_array($currency, self::BUSINESS_CURRENCY_OPTIONS, true)) {
+            return 'TJS';
+        }
+
+        return $currency;
     }
 
     private function defaultBusinessSchedule(): array

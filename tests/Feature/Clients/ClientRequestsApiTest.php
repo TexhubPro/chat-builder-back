@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\Chat;
+use App\Models\ChatMessage;
 use App\Models\Company;
 use App\Models\CompanyCalendarEvent;
 use App\Models\CompanyClient;
@@ -10,7 +11,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 
 uses(RefreshDatabase::class);
 
-function clientRequestsApiContext(bool $withAppointments = true): array
+function clientRequestsApiContext(bool $withAppointments = true, bool $withDelivery = false): array
 {
     $user = User::factory()->create([
         'status' => true,
@@ -30,6 +31,9 @@ function clientRequestsApiContext(bool $withAppointments = true): array
             'appointment' => [
                 'enabled' => $withAppointments,
             ],
+            'delivery' => [
+                'enabled' => $withDelivery,
+            ],
         ],
     ]);
 
@@ -37,6 +41,78 @@ function clientRequestsApiContext(bool $withAppointments = true): array
 
     return [$user, $company, $token];
 }
+
+test('client requests api sends chat notification on delivery status changes when delivery is enabled', function () {
+    [$user, $company, $token] = clientRequestsApiContext(true, true);
+
+    $chat = Chat::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'channel' => 'assistant',
+        'channel_chat_id' => 'assistant-delivery-1',
+        'channel_user_id' => 'assistant-delivery-user-1',
+        'name' => 'Delivery client',
+        'status' => Chat::STATUS_OPEN,
+    ]);
+
+    $client = CompanyClient::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'name' => 'Lead Delivery',
+        'phone' => '+992900001001',
+        'email' => 'delivery@example.test',
+    ]);
+
+    $order = CompanyClientOrder::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'company_client_id' => $client->id,
+        'service_name' => 'Phone order',
+        'status' => CompanyClientOrder::STATUS_NEW,
+        'ordered_at' => now()->subHour(),
+        'metadata' => [
+            'chat_id' => $chat->id,
+            'phone' => $client->phone,
+            'address' => 'Dushanbe',
+        ],
+    ]);
+
+    ChatMessage::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'chat_id' => $chat->id,
+        'sender_type' => ChatMessage::SENDER_CUSTOMER,
+        'direction' => ChatMessage::DIRECTION_INBOUND,
+        'status' => 'received',
+        'message_type' => ChatMessage::TYPE_TEXT,
+        'text' => 'салом, где мой заказ?',
+        'sent_at' => now()->subMinutes(10),
+    ]);
+
+    $response = $this
+        ->withHeader('Authorization', "Bearer {$token}")
+        ->patchJson('/api/client-requests/'.$order->id, [
+            'status' => CompanyClientOrder::STATUS_CONFIRMED,
+        ])
+        ->assertOk()
+        ->json();
+
+    expect($response['request']['status'])->toBe(CompanyClientOrder::STATUS_CONFIRMED);
+    expect($response['request']['board'])->toBe('in_progress');
+
+    $order->refresh();
+    expect((string) $order->status)->toBe(CompanyClientOrder::STATUS_CONFIRMED);
+
+    $statusMessage = ChatMessage::query()
+        ->where('chat_id', $chat->id)
+        ->where('sender_type', ChatMessage::SENDER_SYSTEM)
+        ->where('direction', ChatMessage::DIRECTION_OUTBOUND)
+        ->latest('id')
+        ->first();
+
+    expect($statusMessage)->not->toBeNull();
+    expect((string) $statusMessage?->text)->toContain('подтвержд');
+});
 
 test('client requests api returns kanban-ready items with optional appointments board', function () {
     [$user, $company, $token] = clientRequestsApiContext();
@@ -220,6 +296,61 @@ test('client requests api rejects appointment updates when appointments are disa
         ])
         ->assertStatus(422)
         ->assertJsonPath('message', 'Appointments are disabled for this company.');
+});
+
+test('client requests api rejects delivery statuses when delivery is disabled', function () {
+    [$user, $company, $token] = clientRequestsApiContext(true, false);
+
+    $chat = Chat::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'channel' => 'assistant',
+        'channel_chat_id' => 'assistant-delivery-disabled-1',
+        'channel_user_id' => 'assistant-delivery-disabled-user-1',
+        'name' => 'Delivery Disabled Lead',
+        'status' => Chat::STATUS_OPEN,
+    ]);
+
+    $client = CompanyClient::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'name' => 'Lead Delivery Disabled',
+        'phone' => '+992900000311',
+        'email' => 'delivery-disabled@example.test',
+    ]);
+
+    $order = CompanyClientOrder::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'company_client_id' => $client->id,
+        'service_name' => 'Delivery disabled order',
+        'status' => CompanyClientOrder::STATUS_NEW,
+        'ordered_at' => now()->subHour(),
+        'metadata' => [
+            'chat_id' => $chat->id,
+            'phone' => $client->phone,
+            'address' => 'Dushanbe',
+        ],
+    ]);
+
+    $this
+        ->withHeader('Authorization', "Bearer {$token}")
+        ->patchJson('/api/client-requests/'.$order->id, [
+            'status' => CompanyClientOrder::STATUS_CONFIRMED,
+        ])
+        ->assertStatus(422)
+        ->assertJsonPath('message', 'Delivery statuses are available only when delivery is enabled.');
+
+    $order->refresh();
+    expect((string) $order->status)->toBe(CompanyClientOrder::STATUS_NEW);
+
+    $notificationMessage = ChatMessage::query()
+        ->where('chat_id', $chat->id)
+        ->where('sender_type', ChatMessage::SENDER_SYSTEM)
+        ->where('direction', ChatMessage::DIRECTION_OUTBOUND)
+        ->first();
+
+    expect($notificationMessage)->toBeNull();
 });
 
 test('client requests api deletes request and linked appointment event', function () {

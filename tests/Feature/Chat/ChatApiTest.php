@@ -759,7 +759,10 @@ test('assistant chat auto-replies for inbound image file via openai', function (
 
     $this->mock(OpenAiAssistantClient::class, function (MockInterface $mock): void {
         $mock->shouldReceive('createThread')->once()->andReturn('thread_media_1');
-        $mock->shouldReceive('uploadFile')->once()->andReturn('file_media_1');
+        $mock->shouldReceive('uploadFile')
+            ->once()
+            ->with(\Mockery::type('string'), 'vision')
+            ->andReturn('file_media_1');
         $mock->shouldReceive('sendImageFileMessage')->once()->andReturn('message_media_1');
         $mock->shouldReceive('runThreadAndGetResponse')->once()->andReturn('Media reply from AI');
     });

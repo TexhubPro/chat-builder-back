@@ -2,6 +2,8 @@
 
 use App\Http\Controllers\Api\AssistantController;
 use App\Http\Controllers\Api\AssistantChannelController;
+use App\Http\Controllers\Api\AssistantProductController;
+use App\Http\Controllers\Api\AssistantServiceController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\ChatController;
 use App\Http\Controllers\Api\ChatMessageController;
@@ -109,6 +111,24 @@ Route::prefix('assistant-channels')
             ->whereNumber('assistantId');
         Route::delete('/{assistantId}/{channel}', [AssistantChannelController::class, 'destroy'])
             ->whereNumber('assistantId');
+    });
+
+Route::prefix('assistant-services')
+    ->middleware([EnsureUserIsActive::class])
+    ->group(function (): void {
+        Route::get('/', [AssistantServiceController::class, 'index']);
+        Route::post('/', [AssistantServiceController::class, 'store']);
+        Route::put('/{serviceId}', [AssistantServiceController::class, 'update'])->whereNumber('serviceId');
+        Route::delete('/{serviceId}', [AssistantServiceController::class, 'destroy'])->whereNumber('serviceId');
+    });
+
+Route::prefix('assistant-products')
+    ->middleware([EnsureUserIsActive::class])
+    ->group(function (): void {
+        Route::get('/', [AssistantProductController::class, 'index']);
+        Route::post('/', [AssistantProductController::class, 'store']);
+        Route::put('/{productId}', [AssistantProductController::class, 'update'])->whereNumber('productId');
+        Route::delete('/{productId}', [AssistantProductController::class, 'destroy'])->whereNumber('productId');
     });
 
 Route::prefix('chats')

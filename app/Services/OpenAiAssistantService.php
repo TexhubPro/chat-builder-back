@@ -316,6 +316,7 @@ class OpenAiAssistantService
                 'terms_conditions',
                 'price',
                 'currency',
+                'metadata',
             ]);
 
         $products = $assistant->products()
@@ -332,6 +333,7 @@ class OpenAiAssistantService
                 'currency',
                 'stock_quantity',
                 'is_unlimited_stock',
+                'metadata',
             ]);
 
         $lines = [
@@ -345,12 +347,14 @@ class OpenAiAssistantService
             $lines[] = '- none';
         } else {
             foreach ($services as $service) {
+                $specialistsLine = $this->specialistsSummary($service->metadata, $service->price, $service->currency);
                 $lines[] = sprintf(
-                    '- [Service #%d] %s | price: %s %s | description: %s | terms: %s',
+                    '- [Service #%d] %s | price: %s %s | specialists: %s | description: %s | terms: %s',
                     (int) $service->id,
                     $this->cleanText((string) $service->name, 160),
                     $this->moneyValue($service->price),
                     (string) $service->currency,
+                    $specialistsLine,
                     $this->cleanText((string) ($service->description ?? ''), 300),
                     $this->cleanText((string) ($service->terms_conditions ?? ''), 300),
                 );
@@ -366,15 +370,17 @@ class OpenAiAssistantService
                 $stockLabel = (bool) $product->is_unlimited_stock
                     ? 'unlimited'
                     : (string) max((int) ($product->stock_quantity ?? 0), 0);
+                $productLink = $this->productUrlFromMetadata($product->metadata);
 
                 $lines[] = sprintf(
-                    '- [Product #%d] %s | sku: %s | price: %s %s | stock: %s | description: %s | terms: %s',
+                    '- [Product #%d] %s | sku: %s | price: %s %s | stock: %s | link: %s | description: %s | terms: %s',
                     (int) $product->id,
                     $this->cleanText((string) $product->name, 160),
                     $this->cleanText((string) ($product->sku ?? 'n/a'), 120),
                     $this->moneyValue($product->price),
                     (string) $product->currency,
                     $stockLabel,
+                    $productLink,
                     $this->cleanText((string) ($product->description ?? ''), 300),
                     $this->cleanText((string) ($product->terms_conditions ?? ''), 300),
                 );
@@ -478,6 +484,56 @@ class OpenAiAssistantService
     private function boolLabel(bool $value): string
     {
         return $value ? 'enabled' : 'disabled';
+    }
+
+    private function specialistsSummary(mixed $metadata, mixed $fallbackPrice, mixed $currency): string
+    {
+        if (! is_array($metadata)) {
+            return 'none';
+        }
+
+        $specialists = $metadata['specialists'] ?? null;
+        if (! is_array($specialists) || $specialists === []) {
+            return 'none';
+        }
+
+        $fallbackPriceValue = $this->moneyValue($fallbackPrice);
+        $currencyValue = is_string($currency) && trim($currency) !== '' ? trim($currency) : 'TJS';
+        $parts = [];
+
+        foreach ($specialists as $specialist) {
+            if (! is_array($specialist)) {
+                continue;
+            }
+
+            $name = $this->cleanText((string) ($specialist['name'] ?? ''), 100);
+            $price = array_key_exists('price', $specialist)
+                ? $this->moneyValue($specialist['price'])
+                : $fallbackPriceValue;
+
+            $parts[] = "{$name} ({$price} {$currencyValue})";
+        }
+
+        if ($parts === []) {
+            return 'none';
+        }
+
+        return implode(', ', $parts);
+    }
+
+    private function productUrlFromMetadata(mixed $metadata): string
+    {
+        if (! is_array($metadata)) {
+            return 'n/a';
+        }
+
+        $url = trim((string) ($metadata['product_url'] ?? ''));
+
+        if ($url === '') {
+            return 'n/a';
+        }
+
+        return $this->cleanText($url, 300);
     }
 
     private function cleanText(string $value, int $limit): string

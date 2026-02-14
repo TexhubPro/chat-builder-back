@@ -1230,7 +1230,7 @@ class ChatMessageController extends Controller
 
             $mediaUrl = trim((string) ($incomingMessage->media_url ?? ''));
 
-            if ($mediaUrl !== '') {
+            if ($mediaUrl !== '' && $this->canUseExternalImageUrlForOpenAi($mediaUrl)) {
                 $messageId = $this->openAiClient()->sendImageUrlMessage(
                     $threadId,
                     [$mediaUrl],
@@ -1306,7 +1306,10 @@ class ChatMessageController extends Controller
             return null;
         }
 
-        $fileId = $this->openAiClient()->uploadFile($absolutePath, 'assistants');
+        $purpose = (string) $incomingMessage->message_type === ChatMessage::TYPE_IMAGE
+            ? 'vision'
+            : 'assistants';
+        $fileId = $this->openAiClient()->uploadFile($absolutePath, $purpose);
 
         return is_string($fileId) && trim($fileId) !== '' ? trim($fileId) : null;
     }
@@ -1366,6 +1369,29 @@ class ChatMessageController extends Controller
         }
 
         return $normalized;
+    }
+
+    private function canUseExternalImageUrlForOpenAi(string $url): bool
+    {
+        $host = strtolower((string) parse_url($url, PHP_URL_HOST));
+
+        if ($host === '') {
+            return false;
+        }
+
+        if ($host === 'localhost' || $host === '::1') {
+            return false;
+        }
+
+        if ($host === '0.0.0.0' || $host === '127.0.0.1' || str_starts_with($host, '127.')) {
+            return false;
+        }
+
+        if (str_ends_with($host, '.local') || str_ends_with($host, '.test')) {
+            return false;
+        }
+
+        return true;
     }
 
     private function buildPromptFromChatMessage(ChatMessage $message): string

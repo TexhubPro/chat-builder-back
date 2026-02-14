@@ -3,18 +3,26 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\AssistantChannel;
 use App\Models\Chat;
+use App\Models\ChatMessage;
 use App\Models\Company;
 use App\Models\CompanyCalendarEvent;
+use App\Models\CompanyClient;
 use App\Models\CompanyClientOrder;
 use App\Models\User;
 use App\Services\CompanySubscriptionService;
+use App\Services\InstagramTokenService;
+use App\Services\TelegramBotApiService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
+use TexHub\Meta\Facades\Instagram as InstagramFacade;
+use TexHub\Meta\Models\InstagramIntegration;
+use Throwable;
 
 class CompanyClientOrderController extends Controller
 {
@@ -23,6 +31,7 @@ class CompanyClientOrderController extends Controller
         $user = $this->resolveUser($request);
         $company = $this->resolveCompany($user);
         $appointmentsEnabled = $this->appointmentsEnabledForCompany($company);
+        $deliveryEnabled = $this->deliveryEnabledForCompany($company);
 
         $orders = $company->clientOrders()
             ->with(['client:id,name,phone,email', 'assistant:id,name'])
@@ -47,11 +56,13 @@ class CompanyClientOrderController extends Controller
 
         return response()->json([
             'appointments_enabled' => $appointmentsEnabled,
+            'delivery_enabled' => $deliveryEnabled,
             'requests' => $orders
                 ->map(
                     fn (CompanyClientOrder $order): array => $this->orderPayload(
                         $order,
                         $appointmentsEnabled,
+                        $deliveryEnabled,
                         $chatsById
                     )
                 )
@@ -65,12 +76,7 @@ class CompanyClientOrderController extends Controller
             'status' => [
                 'nullable',
                 'string',
-                Rule::in([
-                    CompanyClientOrder::STATUS_NEW,
-                    CompanyClientOrder::STATUS_IN_PROGRESS,
-                    CompanyClientOrder::STATUS_APPOINTMENTS,
-                    CompanyClientOrder::STATUS_COMPLETED,
-                ]),
+                Rule::in($this->allSupportedStatuses()),
             ],
             'client_name' => ['nullable', 'string', 'max:160'],
             'phone' => ['nullable', 'string', 'max:32'],
@@ -89,8 +95,15 @@ class CompanyClientOrderController extends Controller
         $user = $this->resolveUser($request);
         $company = $this->resolveCompany($user);
         $appointmentsEnabled = $this->appointmentsEnabledForCompany($company);
+        $deliveryEnabled = $this->deliveryEnabledForCompany($company);
         $order = $this->resolveOrder($company, $orderId);
         $client = $order->client;
+        $previousStatus = $this->normalizeStatus(
+            (string) ($order->status ?? CompanyClientOrder::STATUS_NEW),
+            $appointmentsEnabled,
+            $deliveryEnabled
+        );
+        $statusChanged = false;
 
         if (! $client) {
             return response()->json([
@@ -99,7 +112,21 @@ class CompanyClientOrderController extends Controller
         }
 
         if (array_key_exists('status', $validated)) {
-            $status = $this->normalizeStatus((string) $validated['status']);
+            $requestedStatus = strtolower(trim((string) $validated['status']));
+            if (
+                ! $deliveryEnabled
+                && in_array($requestedStatus, $this->deliveryStatuses(), true)
+            ) {
+                return response()->json([
+                    'message' => 'Delivery statuses are available only when delivery is enabled.',
+                ], 422);
+            }
+
+            $status = $this->normalizeStatus(
+                (string) $validated['status'],
+                $appointmentsEnabled,
+                $deliveryEnabled
+            );
 
             if ($status === CompanyClientOrder::STATUS_APPOINTMENTS && ! $appointmentsEnabled) {
                 return response()->json([
@@ -108,9 +135,10 @@ class CompanyClientOrderController extends Controller
             }
 
             $order->status = $status;
-            $order->completed_at = $status === CompanyClientOrder::STATUS_COMPLETED
+            $order->completed_at = $this->isTerminalStatus($status)
                 ? ($order->completed_at ?? now())
                 : null;
+            $statusChanged = $previousStatus !== $status;
         }
 
         if (array_key_exists('service_name', $validated)) {
@@ -305,8 +333,22 @@ class CompanyClientOrderController extends Controller
         $client->save();
         $order->save();
 
+        if ($deliveryEnabled && $statusChanged) {
+            $this->notifyClientAboutDeliveryStatusChange(
+                $company,
+                $order->fresh(['assistant:id,name']),
+                $client->fresh()
+            );
+        }
+
         $appointmentsEnabled = $this->appointmentsEnabledForCompany($company->fresh());
-        $payload = $this->orderPayload($order->fresh(['client:id,name,phone,email', 'assistant:id,name']), $appointmentsEnabled, collect());
+        $deliveryEnabled = $this->deliveryEnabledForCompany($company->fresh());
+        $payload = $this->orderPayload(
+            $order->fresh(['client:id,name,phone,email', 'assistant:id,name']),
+            $appointmentsEnabled,
+            $deliveryEnabled,
+            collect()
+        );
 
         return response()->json([
             'message' => 'Client request updated successfully.',
@@ -361,10 +403,15 @@ class CompanyClientOrderController extends Controller
     private function orderPayload(
         CompanyClientOrder $order,
         bool $appointmentsEnabled,
+        bool $deliveryEnabled,
         Collection $chatsById
     ): array {
         $metadata = is_array($order->metadata) ? $order->metadata : [];
-        $status = $this->normalizeStatus((string) ($order->status ?? CompanyClientOrder::STATUS_NEW));
+        $status = $this->normalizeStatus(
+            (string) ($order->status ?? CompanyClientOrder::STATUS_NEW),
+            $appointmentsEnabled,
+            $deliveryEnabled
+        );
         $appointment = $this->appointmentPayload($metadata);
         $sourceChatId = $this->extractSourceChatId($metadata);
         $sourceChat = $sourceChatId !== null ? $chatsById->get($sourceChatId) : null;
@@ -392,7 +439,12 @@ class CompanyClientOrderController extends Controller
             'currency' => (string) $order->currency,
             'note' => (string) ($order->notes ?? ''),
             'status' => $status,
-            'board' => $this->resolveBoard($status, $appointment !== null, $appointmentsEnabled),
+            'board' => $this->resolveBoard(
+                $status,
+                $appointment !== null,
+                $appointmentsEnabled,
+                $deliveryEnabled
+            ),
             'appointment' => $appointment,
             'source_chat_id' => $sourceChatId,
             'source_channel' => $sourceChannel !== '' ? $sourceChannel : null,
@@ -435,12 +487,37 @@ class CompanyClientOrderController extends Controller
         ];
     }
 
-    private function normalizeStatus(string $status): string
+    private function normalizeStatus(
+        string $status,
+        bool $appointmentsEnabled,
+        bool $deliveryEnabled
+    ): string
     {
-        return match ($status) {
-            CompanyClientOrder::STATUS_IN_PROGRESS => CompanyClientOrder::STATUS_IN_PROGRESS,
-            CompanyClientOrder::STATUS_APPOINTMENTS => CompanyClientOrder::STATUS_APPOINTMENTS,
-            CompanyClientOrder::STATUS_COMPLETED => CompanyClientOrder::STATUS_COMPLETED,
+        $normalized = strtolower(trim($status));
+
+        if ($deliveryEnabled) {
+            return match ($normalized) {
+                CompanyClientOrder::STATUS_NEW => CompanyClientOrder::STATUS_NEW,
+                CompanyClientOrder::STATUS_CONFIRMED => CompanyClientOrder::STATUS_CONFIRMED,
+                CompanyClientOrder::STATUS_CANCELED => CompanyClientOrder::STATUS_CANCELED,
+                CompanyClientOrder::STATUS_HANDED_TO_COURIER => CompanyClientOrder::STATUS_HANDED_TO_COURIER,
+                CompanyClientOrder::STATUS_DELIVERED => CompanyClientOrder::STATUS_DELIVERED,
+                CompanyClientOrder::STATUS_APPOINTMENTS => $appointmentsEnabled
+                    ? CompanyClientOrder::STATUS_APPOINTMENTS
+                    : CompanyClientOrder::STATUS_CONFIRMED,
+                CompanyClientOrder::STATUS_COMPLETED => CompanyClientOrder::STATUS_DELIVERED,
+                CompanyClientOrder::STATUS_IN_PROGRESS => CompanyClientOrder::STATUS_CONFIRMED,
+                default => CompanyClientOrder::STATUS_NEW,
+            };
+        }
+
+        return match ($normalized) {
+            CompanyClientOrder::STATUS_NEW => CompanyClientOrder::STATUS_NEW,
+            CompanyClientOrder::STATUS_IN_PROGRESS, CompanyClientOrder::STATUS_CONFIRMED, CompanyClientOrder::STATUS_HANDED_TO_COURIER => CompanyClientOrder::STATUS_IN_PROGRESS,
+            CompanyClientOrder::STATUS_APPOINTMENTS => $appointmentsEnabled
+                ? CompanyClientOrder::STATUS_APPOINTMENTS
+                : CompanyClientOrder::STATUS_IN_PROGRESS,
+            CompanyClientOrder::STATUS_COMPLETED, CompanyClientOrder::STATUS_DELIVERED, CompanyClientOrder::STATUS_CANCELED => CompanyClientOrder::STATUS_COMPLETED,
             default => CompanyClientOrder::STATUS_NEW,
         };
     }
@@ -448,9 +525,16 @@ class CompanyClientOrderController extends Controller
     private function resolveBoard(
         string $status,
         bool $hasAppointment,
-        bool $appointmentsEnabled
+        bool $appointmentsEnabled,
+        bool $deliveryEnabled
     ): string {
-        if ($status === CompanyClientOrder::STATUS_COMPLETED) {
+        if (
+            $status === CompanyClientOrder::STATUS_COMPLETED
+            || ($deliveryEnabled && in_array($status, [
+                CompanyClientOrder::STATUS_DELIVERED,
+                CompanyClientOrder::STATUS_CANCELED,
+            ], true))
+        ) {
             return 'completed';
         }
 
@@ -464,7 +548,13 @@ class CompanyClientOrderController extends Controller
             return 'appointments';
         }
 
-        if ($status === CompanyClientOrder::STATUS_IN_PROGRESS) {
+        if (
+            $status === CompanyClientOrder::STATUS_IN_PROGRESS
+            || ($deliveryEnabled && in_array($status, [
+                CompanyClientOrder::STATUS_CONFIRMED,
+                CompanyClientOrder::STATUS_HANDED_TO_COURIER,
+            ], true))
+        ) {
             return 'in_progress';
         }
 
@@ -527,6 +617,428 @@ class CompanyClientOrderController extends Controller
         return $accountType === 'with_appointments' && $enabled;
     }
 
+    private function deliveryEnabledForCompany(Company $company): bool
+    {
+        $settings = is_array($company->settings) ? $company->settings : [];
+
+        return (bool) data_get($settings, 'delivery.enabled', false);
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function allSupportedStatuses(): array
+    {
+        return array_values(array_unique(array_merge(
+            [
+                CompanyClientOrder::STATUS_NEW,
+                CompanyClientOrder::STATUS_IN_PROGRESS,
+                CompanyClientOrder::STATUS_APPOINTMENTS,
+                CompanyClientOrder::STATUS_COMPLETED,
+            ],
+            $this->deliveryStatuses(),
+        )));
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function deliveryStatuses(): array
+    {
+        return [
+            CompanyClientOrder::STATUS_CONFIRMED,
+            CompanyClientOrder::STATUS_CANCELED,
+            CompanyClientOrder::STATUS_HANDED_TO_COURIER,
+            CompanyClientOrder::STATUS_DELIVERED,
+        ];
+    }
+
+    private function isTerminalStatus(string $status): bool
+    {
+        return in_array($status, [
+            CompanyClientOrder::STATUS_COMPLETED,
+            CompanyClientOrder::STATUS_CANCELED,
+            CompanyClientOrder::STATUS_DELIVERED,
+        ], true);
+    }
+
+    private function notifyClientAboutDeliveryStatusChange(
+        Company $company,
+        CompanyClientOrder $order,
+        CompanyClient $client
+    ): void {
+        $status = trim((string) $order->status);
+        if (! in_array($status, [
+            CompanyClientOrder::STATUS_NEW,
+            CompanyClientOrder::STATUS_CONFIRMED,
+            CompanyClientOrder::STATUS_CANCELED,
+            CompanyClientOrder::STATUS_HANDED_TO_COURIER,
+            CompanyClientOrder::STATUS_DELIVERED,
+        ], true)) {
+            return;
+        }
+
+        $sourceChatId = $this->extractSourceChatId($order->metadata);
+        if ($sourceChatId === null) {
+            return;
+        }
+
+        $chat = Chat::query()
+            ->where('company_id', $company->id)
+            ->whereKey($sourceChatId)
+            ->first();
+
+        if (! $chat) {
+            return;
+        }
+
+        $language = $this->resolveChatLanguage($company, $chat);
+        $serviceName = trim((string) $order->service_name);
+        $clientName = trim((string) $client->name);
+        $messageText = $this->deliveryStatusNotificationText($status, $language, $serviceName, $clientName);
+
+        if ($messageText === '') {
+            return;
+        }
+
+        [$channelMessageId, $statusFlag] = $this->dispatchDeliveryStatusNotification($company, $chat, $messageText);
+
+        $sentAt = now();
+        $message = ChatMessage::query()->create([
+            'user_id' => $company->user_id,
+            'company_id' => $company->id,
+            'chat_id' => $chat->id,
+            'assistant_id' => $order->assistant_id,
+            'sender_type' => ChatMessage::SENDER_SYSTEM,
+            'direction' => ChatMessage::DIRECTION_OUTBOUND,
+            'status' => $statusFlag,
+            'channel_message_id' => $channelMessageId,
+            'message_type' => ChatMessage::TYPE_TEXT,
+            'text' => $messageText,
+            'sent_at' => $sentAt,
+            'failed_at' => $statusFlag === 'failed' ? $sentAt : null,
+        ]);
+
+        $chat->forceFill([
+            'last_message_preview' => $this->buildMessagePreview($messageText),
+            'last_message_at' => $message->sent_at ?? $sentAt,
+        ])->save();
+    }
+
+    private function deliveryStatusNotificationText(
+        string $status,
+        string $language,
+        string $serviceName,
+        string $clientName = '',
+    ): string {
+        $namePrefix = $clientName !== ''
+            ? ($language === 'en' ? "{$clientName}, " : "{$clientName}, ")
+            : '';
+        $service = $serviceName !== ''
+            ? $serviceName
+            : ($language === 'en' ? 'your order' : 'ваш заказ');
+
+        return match ($status) {
+            CompanyClientOrder::STATUS_NEW => $language === 'en'
+                ? $namePrefix."we received {$service}. Status: new."
+                : $namePrefix."мы получили {$service}. Статус: новый.",
+            CompanyClientOrder::STATUS_CONFIRMED => $language === 'en'
+                ? $namePrefix."{$service} has been confirmed."
+                : $namePrefix."{$service} подтверждён.",
+            CompanyClientOrder::STATUS_CANCELED => $language === 'en'
+                ? $namePrefix."{$service} has been canceled."
+                : $namePrefix."{$service} отменён.",
+            CompanyClientOrder::STATUS_HANDED_TO_COURIER => $language === 'en'
+                ? $namePrefix."{$service} has been handed to courier."
+                : $namePrefix."{$service} передан курьеру.",
+            CompanyClientOrder::STATUS_DELIVERED => $language === 'en'
+                ? $namePrefix."{$service} has been delivered. Thank you!"
+                : $namePrefix."{$service} доставлен. Спасибо!",
+            default => '',
+        };
+    }
+
+    private function resolveChatLanguage(Company $company, Chat $chat): string
+    {
+        $chatMetadata = is_array($chat->metadata) ? $chat->metadata : [];
+        $metadataLanguage = strtolower(trim((string) (
+            data_get($chatMetadata, 'customer_language')
+            ?? data_get($chatMetadata, 'language')
+            ?? data_get($chatMetadata, 'preferred_language')
+            ?? ''
+        )));
+
+        if (in_array($metadataLanguage, ['ru', 'en'], true)) {
+            return $metadataLanguage;
+        }
+
+        $latestInboundText = trim((string) (ChatMessage::query()
+            ->where('chat_id', $chat->id)
+            ->where('direction', ChatMessage::DIRECTION_INBOUND)
+            ->where('sender_type', ChatMessage::SENDER_CUSTOMER)
+            ->whereNotNull('text')
+            ->orderByDesc('id')
+            ->value('text') ?? ''));
+
+        if ($latestInboundText !== '') {
+            if (preg_match('/\p{Cyrillic}/u', $latestInboundText) === 1) {
+                return 'ru';
+            }
+
+            if (preg_match('/[A-Za-z]/', $latestInboundText) === 1) {
+                return 'en';
+            }
+        }
+
+        $settings = is_array($company->settings) ? $company->settings : [];
+        $allowedLanguages = data_get($settings, 'ai.response_languages');
+
+        if (is_array($allowedLanguages)) {
+            foreach ($allowedLanguages as $language) {
+                $normalized = strtolower(trim((string) $language));
+                if (in_array($normalized, ['ru', 'en'], true)) {
+                    return $normalized;
+                }
+            }
+        }
+
+        return 'ru';
+    }
+
+    /**
+     * @return array{0: string|null, 1: string}
+     */
+    private function dispatchDeliveryStatusNotification(
+        Company $company,
+        Chat $chat,
+        string $text,
+    ): array {
+        if ($chat->channel === AssistantChannel::CHANNEL_TELEGRAM) {
+            $context = $this->resolveTelegramDispatchContext($company, $chat);
+
+            if (! is_array($context)) {
+                return [null, 'failed'];
+            }
+
+            try {
+                $messageId = $this->telegramBotApiService()->sendTextMessage(
+                    (string) $context['bot_token'],
+                    (string) $context['chat_id'],
+                    $text,
+                );
+            } catch (Throwable) {
+                return [null, 'failed'];
+            }
+
+            return [is_string($messageId) && trim($messageId) !== '' ? trim($messageId) : null, 'sent'];
+        }
+
+        if ($chat->channel === AssistantChannel::CHANNEL_INSTAGRAM) {
+            $context = $this->resolveInstagramDispatchContext($company, $chat);
+
+            if (! is_array($context)) {
+                return [null, 'failed'];
+            }
+
+            /** @var InstagramIntegration $integration */
+            $integration = $context['integration'];
+            $igUserId = (string) $context['ig_user_id'];
+            $recipientId = (string) $context['recipient_id'];
+            $accessToken = trim((string) $integration->access_token);
+
+            if ($accessToken === '') {
+                return [null, 'failed'];
+            }
+
+            try {
+                $messageId = InstagramFacade::sendTextMessage(
+                    $igUserId,
+                    $recipientId,
+                    $text,
+                    $accessToken,
+                    false,
+                );
+            } catch (Throwable) {
+                return [null, 'failed'];
+            }
+
+            return [is_string($messageId) && trim($messageId) !== '' ? trim($messageId) : null, 'sent'];
+        }
+
+        return [null, 'sent'];
+    }
+
+    private function resolveTelegramDispatchContext(Company $company, Chat $chat): ?array
+    {
+        if ($chat->channel !== AssistantChannel::CHANNEL_TELEGRAM) {
+            return null;
+        }
+
+        $assistantChannel = $chat->assistant_channel_id
+            ? AssistantChannel::query()->whereKey($chat->assistant_channel_id)->first()
+            : AssistantChannel::query()
+                ->where('company_id', $company->id)
+                ->where('assistant_id', $chat->assistant_id)
+                ->where('channel', AssistantChannel::CHANNEL_TELEGRAM)
+                ->orderByDesc('is_active')
+                ->orderBy('id')
+                ->first();
+
+        if (
+            ! $assistantChannel
+            || ! $assistantChannel->is_active
+            || $assistantChannel->channel !== AssistantChannel::CHANNEL_TELEGRAM
+        ) {
+            return null;
+        }
+
+        $credentials = is_array($assistantChannel->credentials) ? $assistantChannel->credentials : [];
+        $botToken = trim((string) ($credentials['bot_token'] ?? ''));
+
+        if ($botToken === '') {
+            return null;
+        }
+
+        $chatId = trim((string) ($chat->channel_chat_id ?? ''));
+        if ($chatId === '') {
+            $chatId = trim((string) ($chat->channel_user_id ?? ''));
+        }
+
+        if ($chatId === '') {
+            return null;
+        }
+
+        return [
+            'assistant_channel' => $assistantChannel,
+            'bot_token' => $botToken,
+            'chat_id' => $chatId,
+        ];
+    }
+
+    private function resolveInstagramDispatchContext(Company $company, Chat $chat): ?array
+    {
+        if ($chat->channel !== AssistantChannel::CHANNEL_INSTAGRAM) {
+            return null;
+        }
+
+        $assistantChannel = $chat->assistant_channel_id
+            ? AssistantChannel::query()->whereKey($chat->assistant_channel_id)->first()
+            : null;
+
+        if (
+            $assistantChannel
+            && (
+                ! $assistantChannel->is_active
+                || $assistantChannel->channel !== AssistantChannel::CHANNEL_INSTAGRAM
+            )
+        ) {
+            return null;
+        }
+
+        $metadata = is_array($chat->metadata) ? $chat->metadata : [];
+        $instagramMeta = is_array($metadata['instagram'] ?? null)
+            ? $metadata['instagram']
+            : [];
+
+        $integrationId = (int) ($instagramMeta['integration_id'] ?? 0);
+        $businessAccountId = $this->resolveInstagramBusinessAccountId($chat, $instagramMeta);
+        $customerAccountId = $this->resolveInstagramCustomerAccountId($chat);
+
+        if ($businessAccountId === '' || $customerAccountId === '') {
+            return null;
+        }
+
+        $integration = null;
+
+        if ($integrationId > 0) {
+            $integration = InstagramIntegration::query()
+                ->where('user_id', $company->user_id)
+                ->whereKey($integrationId)
+                ->first();
+        }
+
+        if (! $integration) {
+            $integration = InstagramIntegration::query()
+                ->where('user_id', $company->user_id)
+                ->where(function ($builder) use ($businessAccountId): void {
+                    $builder
+                        ->where('receiver_id', $businessAccountId)
+                        ->orWhere('instagram_user_id', $businessAccountId);
+                })
+                ->orderByDesc('id')
+                ->first();
+        }
+
+        if (! $integration || ! (bool) $integration->is_active) {
+            return null;
+        }
+
+        $integration = $this->instagramTokenService()->ensureTokenIsFresh(
+            $integration,
+            $this->instagramTokenRefreshGraceSeconds(),
+        );
+
+        $igUserId = trim((string) ($integration->receiver_id ?: $businessAccountId));
+
+        if ($igUserId === '') {
+            return null;
+        }
+
+        return [
+            'integration' => $integration,
+            'ig_user_id' => $igUserId,
+            'recipient_id' => $customerAccountId,
+        ];
+    }
+
+    private function resolveInstagramBusinessAccountId(Chat $chat, array $instagramMeta): string
+    {
+        $receiverId = trim((string) ($instagramMeta['receiver_id'] ?? ''));
+        if ($receiverId !== '') {
+            return $receiverId;
+        }
+
+        $channelChatId = trim((string) ($chat->channel_chat_id ?? ''));
+        if ($channelChatId !== '' && str_contains($channelChatId, ':')) {
+            [$businessId] = explode(':', $channelChatId, 2);
+            $businessId = trim($businessId);
+
+            if ($businessId !== '') {
+                return $businessId;
+            }
+        }
+
+        return trim((string) ($instagramMeta['instagram_user_id'] ?? ''));
+    }
+
+    private function resolveInstagramCustomerAccountId(Chat $chat): string
+    {
+        $channelUserId = trim((string) ($chat->channel_user_id ?? ''));
+        if ($channelUserId !== '') {
+            return $channelUserId;
+        }
+
+        $channelChatId = trim((string) ($chat->channel_chat_id ?? ''));
+        if ($channelChatId !== '' && str_contains($channelChatId, ':')) {
+            [, $customerId] = explode(':', $channelChatId, 2);
+
+            return trim((string) $customerId);
+        }
+
+        return '';
+    }
+
+    private function buildMessagePreview(string $text): string
+    {
+        $normalized = trim($text);
+
+        if ($normalized === '') {
+            return '[Message]';
+        }
+
+        return Str::limit($normalized, 160, '...');
+    }
+
     private function companyTimezone(Company $company): string
     {
         $settings = is_array($company->settings) ? $company->settings : [];
@@ -542,5 +1054,20 @@ class CompanyClientOrderController extends Controller
     private function subscriptionService(): CompanySubscriptionService
     {
         return app(CompanySubscriptionService::class);
+    }
+
+    private function telegramBotApiService(): TelegramBotApiService
+    {
+        return app(TelegramBotApiService::class);
+    }
+
+    private function instagramTokenService(): InstagramTokenService
+    {
+        return app(InstagramTokenService::class);
+    }
+
+    private function instagramTokenRefreshGraceSeconds(): int
+    {
+        return max((int) config('meta.instagram.token_refresh_grace_seconds', 900), 0);
     }
 }

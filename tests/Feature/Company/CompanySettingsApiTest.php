@@ -38,6 +38,7 @@ test('company settings api returns default company profile and settings', functi
     expect($response['company']['settings']['delivery']['available_from'])->toBe('09:00');
     expect($response['company']['settings']['delivery']['available_to'])->toBe('21:00');
     expect($response['company']['settings']['business']['timezone'])->not->toBe('');
+    expect($response['company']['settings']['business']['currency'])->toBe('TJS');
     expect($response['company']['settings']['business']['schedule']['monday']['is_day_off'])->toBeFalse();
     expect($response['company']['settings']['business']['schedule']['monday']['start_time'])->toBe('09:00');
     expect($response['company']['settings']['business']['schedule']['monday']['end_time'])->toBe('18:00');
@@ -81,6 +82,7 @@ test('company settings api updates company data and appointment settings', funct
             'business' => [
                 'address' => 'Dushanbe, Rudaki 12',
                 'timezone' => 'Asia/Dushanbe',
+                'currency' => 'USD',
                 'schedule' => [
                     'monday' => ['is_day_off' => false, 'start_time' => '08:30', 'end_time' => '18:30'],
                     'tuesday' => ['is_day_off' => false, 'start_time' => '09:00', 'end_time' => '18:00'],
@@ -146,6 +148,7 @@ test('company settings api updates company data and appointment settings', funct
     expect($response['company']['settings']['delivery']['available_to'])->toBe('22:00');
     expect($response['company']['settings']['delivery']['notes'])->toBe('Доставка только по городу.');
     expect($response['company']['settings']['business']['timezone'])->toBe('Asia/Dushanbe');
+    expect($response['company']['settings']['business']['currency'])->toBe('USD');
     expect($response['company']['settings']['business']['schedule']['monday']['is_day_off'])->toBeFalse();
     expect($response['company']['settings']['business']['schedule']['monday']['start_time'])->toBe('08:30');
     expect($response['company']['settings']['business']['schedule']['monday']['end_time'])->toBe('18:30');

@@ -14,6 +14,10 @@ class CompanyClientOrder extends Model
     public const STATUS_IN_PROGRESS = 'in_progress';
     public const STATUS_APPOINTMENTS = 'appointments';
     public const STATUS_COMPLETED = 'completed';
+    public const STATUS_CONFIRMED = 'confirmed';
+    public const STATUS_CANCELED = 'canceled';
+    public const STATUS_HANDED_TO_COURIER = 'handed_to_courier';
+    public const STATUS_DELIVERED = 'delivered';
 
     protected $fillable = [
         'user_id',
