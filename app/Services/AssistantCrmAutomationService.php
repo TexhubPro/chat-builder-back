@@ -215,19 +215,150 @@ class AssistantCrmAutomationService
         array $payload,
         bool $bookAppointment
     ): ?string {
-        $phone = trim((string) ($payload['phone'] ?? ''));
-        $serviceName = trim((string) ($payload['service_name'] ?? ''));
-        $address = trim((string) ($payload['address'] ?? ''));
-        $clientName = trim((string) ($payload['client_name'] ?? ''));
-        $note = trim((string) ($payload['note'] ?? ''));
-        $amount = $this->normalizedAmount($payload['amount'] ?? null);
-
-        if ($phone === '' || $serviceName === '' || $address === '') {
+        if ($bookAppointment && ! $this->appointmentsEnabledForCompany($company)) {
             return null;
         }
 
-        if ($bookAppointment && ! $this->appointmentsEnabledForCompany($company)) {
-            return null;
+        $requiredFields = $bookAppointment
+            ? $this->requiredAppointmentFields($company)
+            : $this->requiredOrderFields($company);
+        $linkedClient = $this->resolveLinkedClient($company, $chat);
+
+        $rawPhone = $this->normalizePhone($payload['phone'] ?? null);
+        $fallbackPhone = $this->fallbackPhoneForChat($chat, $linkedClient);
+        $phone = $rawPhone ?? $fallbackPhone ?? 'chat-'.$chat->id;
+
+        $rawClientName = trim((string) ($payload['client_name'] ?? ''));
+        $clientName = $rawClientName !== ''
+            ? $rawClientName
+            : $this->fallbackClientNameForChat($chat, $linkedClient, $phone);
+
+        $rawServiceName = trim((string) ($payload['service_name'] ?? ''));
+        $serviceName = $rawServiceName !== ''
+            ? $rawServiceName
+            : ($bookAppointment ? 'Appointment request' : 'Order request');
+
+        $address = $this->resolveAddressFromPayloadOrContext($payload, $chat, $linkedClient);
+        $note = trim((string) ($payload['note'] ?? ''));
+
+        $hasAmountValue = array_key_exists('amount', $payload) && is_numeric($payload['amount']);
+        $amount = $hasAmountValue ? $this->normalizedAmount($payload['amount']) : 0.0;
+
+        $appointmentDate = null;
+        $appointmentTime = null;
+        $appointmentDuration = null;
+        $appointmentConfig = $this->appointmentConfig($company);
+        $timezone = $this->companyTimezone($company);
+        $startsAtLocal = null;
+        $endsAtLocal = null;
+        $startsAtUtc = null;
+        $endsAtUtc = null;
+
+        if ($bookAppointment) {
+            $appointmentDateCandidate = trim((string) ($payload['appointment_date'] ?? ''));
+            $appointmentTimeCandidate = trim((string) ($payload['appointment_time'] ?? ''));
+            $appointmentDurationCandidate = $this->normalizeDurationMinutes(
+                $payload['appointment_duration_minutes'] ?? $payload['duration_minutes'] ?? null
+            );
+
+            $durationRequired = in_array('appointment_duration_minutes', $requiredFields, true);
+            if ($appointmentDurationCandidate === null) {
+                if ($durationRequired) {
+                    return null;
+                }
+
+                $appointmentDurationCandidate = max((int) $appointmentConfig['slot_minutes'], 15);
+            }
+
+            $hasDate = preg_match('/^\d{4}-\d{2}-\d{2}$/', $appointmentDateCandidate) === 1;
+            $hasTime = preg_match('/^(?:[01]\d|2[0-3]):[0-5]\d$/', $appointmentTimeCandidate) === 1;
+            $dateRequired = in_array('appointment_date', $requiredFields, true);
+            $timeRequired = in_array('appointment_time', $requiredFields, true);
+
+            if (! $hasDate || ! $hasTime) {
+                if ($dateRequired || $timeRequired) {
+                    return null;
+                }
+
+                $firstAvailableSlot = $this->nextAvailableSlots(
+                    $company,
+                    $timezone,
+                    $appointmentDurationCandidate,
+                    1
+                );
+
+                if ($firstAvailableSlot === []) {
+                    return null;
+                }
+
+                [$appointmentDateCandidate, $appointmentTimeCandidate] = explode(' ', $firstAvailableSlot[0], 2);
+                $hasDate = preg_match('/^\d{4}-\d{2}-\d{2}$/', $appointmentDateCandidate) === 1;
+                $hasTime = preg_match('/^(?:[01]\d|2[0-3]):[0-5]\d$/', $appointmentTimeCandidate) === 1;
+            }
+
+            if (! $hasDate || ! $hasTime) {
+                return null;
+            }
+
+            $startsAtLocal = Carbon::createFromFormat(
+                'Y-m-d H:i',
+                "{$appointmentDateCandidate} {$appointmentTimeCandidate}",
+                $timezone
+            );
+            $endsAtLocal = (clone $startsAtLocal)->addMinutes($appointmentDurationCandidate);
+
+            if (! $this->isAppointmentSlotAvailable($company, $startsAtLocal, $endsAtLocal)) {
+                if ($dateRequired || $timeRequired) {
+                    return null;
+                }
+
+                $firstAvailableSlot = $this->nextAvailableSlots(
+                    $company,
+                    $timezone,
+                    $appointmentDurationCandidate,
+                    1
+                );
+
+                if ($firstAvailableSlot === []) {
+                    return null;
+                }
+
+                [$appointmentDateCandidate, $appointmentTimeCandidate] = explode(' ', $firstAvailableSlot[0], 2);
+                $startsAtLocal = Carbon::createFromFormat(
+                    'Y-m-d H:i',
+                    "{$appointmentDateCandidate} {$appointmentTimeCandidate}",
+                    $timezone
+                );
+                $endsAtLocal = (clone $startsAtLocal)->addMinutes($appointmentDurationCandidate);
+
+                if (! $this->isAppointmentSlotAvailable($company, $startsAtLocal, $endsAtLocal)) {
+                    return null;
+                }
+            }
+
+            $appointmentDate = $appointmentDateCandidate;
+            $appointmentTime = $appointmentTimeCandidate;
+            $appointmentDuration = $appointmentDurationCandidate;
+            $startsAtUtc = $startsAtLocal->copy()->utc();
+            $endsAtUtc = $endsAtLocal->copy()->utc();
+        }
+
+        $fieldValues = [
+            'client_name' => $clientName,
+            'phone' => $phone,
+            'service_name' => $serviceName,
+            'address' => $address,
+            'amount_set' => $hasAmountValue,
+            'note' => $note,
+            'appointment_date' => $appointmentDate,
+            'appointment_time' => $appointmentTime,
+            'appointment_duration_minutes' => $appointmentDuration,
+        ];
+
+        foreach ($requiredFields as $requiredField) {
+            if (! $this->isRequiredFieldValuePresent($requiredField, $fieldValues)) {
+                return null;
+            }
         }
 
         $client = $this->resolveOrCreateClient($company, $chat, $clientName, $phone, $address);
@@ -240,33 +371,20 @@ class AssistantCrmAutomationService
             'chat_id' => $chat->id,
             'address' => Str::limit($address, 255, ''),
             'phone' => Str::limit($phone, 32, ''),
+            'required_fields' => $requiredFields,
             'assistant_action' => $payload,
         ];
 
         $calendarEvent = null;
-        $appointmentDuration = null;
 
         if ($bookAppointment) {
-            $appointmentDate = trim((string) ($payload['appointment_date'] ?? ''));
-            $appointmentTime = trim((string) ($payload['appointment_time'] ?? ''));
-            $appointmentDuration = (int) ($payload['appointment_duration_minutes'] ?? $payload['duration_minutes'] ?? 0);
-
             if (
-                ! preg_match('/^\d{4}-\d{2}-\d{2}$/', $appointmentDate)
-                || ! preg_match('/^(?:[01]\d|2[0-3]):[0-5]\d$/', $appointmentTime)
-                || $appointmentDuration < 15
-                || $appointmentDuration > 720
+                $appointmentDate === null
+                || $appointmentTime === null
+                || $appointmentDuration === null
+                || $startsAtUtc === null
+                || $endsAtUtc === null
             ) {
-                return null;
-            }
-
-            $timezone = $this->companyTimezone($company);
-            $startsAtLocal = Carbon::createFromFormat('Y-m-d H:i', "{$appointmentDate} {$appointmentTime}", $timezone);
-            $endsAtLocal = (clone $startsAtLocal)->addMinutes($appointmentDuration);
-            $startsAtUtc = $startsAtLocal->copy()->utc();
-            $endsAtUtc = $endsAtLocal->copy()->utc();
-
-            if (! $this->isAppointmentSlotAvailable($company, $startsAtLocal, $endsAtLocal)) {
                 return null;
             }
 
@@ -282,7 +400,7 @@ class AssistantCrmAutomationService
                 'ends_at' => $endsAtUtc,
                 'timezone' => $timezone,
                 'status' => CompanyCalendarEvent::STATUS_SCHEDULED,
-                'location' => Str::limit($address, 255, ''),
+                'location' => $address !== '' ? Str::limit($address, 255, '') : null,
                 'metadata' => [
                     'source' => 'assistant_crm_action',
                     'chat_id' => $chat->id,
@@ -424,6 +542,189 @@ class AssistantCrmAutomationService
         $amount = round((float) $value, 2);
 
         return $amount < 0 ? 0.0 : $amount;
+    }
+
+    private function requiredOrderFields(Company $company): array
+    {
+        $settings = is_array($company->settings) ? $company->settings : [];
+
+        return $this->normalizeRequiredFields(
+            data_get($settings, 'crm.order_required_fields'),
+            ['phone', 'service_name', 'address'],
+            self::ORDER_FIELD_OPTIONS,
+        );
+    }
+
+    private function requiredAppointmentFields(Company $company): array
+    {
+        $settings = is_array($company->settings) ? $company->settings : [];
+
+        return $this->normalizeRequiredFields(
+            data_get($settings, 'crm.appointment_required_fields'),
+            [
+                'phone',
+                'service_name',
+                'address',
+                'appointment_date',
+                'appointment_time',
+                'appointment_duration_minutes',
+            ],
+            self::APPOINTMENT_FIELD_OPTIONS,
+        );
+    }
+
+    private function normalizeRequiredFields(
+        mixed $rawFields,
+        array $defaults,
+        array $allowed
+    ): array {
+        $values = is_array($rawFields) ? $rawFields : $defaults;
+        $allowedLookup = array_fill_keys($allowed, true);
+        $normalized = [];
+
+        foreach ($values as $value) {
+            if (! is_string($value)) {
+                continue;
+            }
+
+            $field = trim($value);
+            if ($field === '' || ! isset($allowedLookup[$field])) {
+                continue;
+            }
+
+            $normalized[] = $field;
+        }
+
+        return array_values(array_unique($normalized));
+    }
+
+    private function normalizePhone(mixed $value): ?string
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $normalized = trim($value);
+
+        if ($normalized === '') {
+            return null;
+        }
+
+        return Str::limit($normalized, 32, '');
+    }
+
+    private function resolveLinkedClient(Company $company, Chat $chat): ?CompanyClient
+    {
+        $chatMetadata = is_array($chat->metadata) ? $chat->metadata : [];
+        $linkedClientId = data_get($chatMetadata, 'company_client_id');
+
+        if (! is_numeric($linkedClientId)) {
+            return null;
+        }
+
+        return $company->clients()->whereKey((int) $linkedClientId)->first();
+    }
+
+    private function fallbackPhoneForChat(Chat $chat, ?CompanyClient $linkedClient): ?string
+    {
+        $chatMetadata = is_array($chat->metadata) ? $chat->metadata : [];
+
+        $candidates = [
+            $linkedClient?->phone,
+            data_get($chatMetadata, 'phone'),
+            data_get($chatMetadata, 'client_phone'),
+            data_get($chatMetadata, 'contact.phone'),
+            data_get($chatMetadata, 'contacts.phone'),
+            $chat->channel_user_id,
+        ];
+
+        foreach ($candidates as $candidate) {
+            $phone = $this->normalizePhone($candidate);
+
+            if ($phone !== null) {
+                return $phone;
+            }
+        }
+
+        return null;
+    }
+
+    private function fallbackClientNameForChat(Chat $chat, ?CompanyClient $linkedClient, string $phone): string
+    {
+        if ($linkedClient && trim((string) $linkedClient->name) !== '') {
+            return trim((string) $linkedClient->name);
+        }
+
+        $chatName = trim((string) ($chat->name ?? ''));
+        if ($chatName !== '') {
+            return $chatName;
+        }
+
+        return 'Client '.$phone;
+    }
+
+    private function resolveAddressFromPayloadOrContext(
+        array $payload,
+        Chat $chat,
+        ?CompanyClient $linkedClient
+    ): string {
+        $address = trim((string) ($payload['address'] ?? ''));
+        if ($address !== '') {
+            return $address;
+        }
+
+        $linkedMetadata = is_array($linkedClient?->metadata) ? $linkedClient->metadata : [];
+        $chatMetadata = is_array($chat->metadata) ? $chat->metadata : [];
+        $candidates = [
+            data_get($linkedMetadata, 'address'),
+            data_get($chatMetadata, 'address'),
+            data_get($chatMetadata, 'contact.address'),
+            data_get($chatMetadata, 'contacts.address'),
+        ];
+
+        foreach ($candidates as $candidate) {
+            if (! is_string($candidate)) {
+                continue;
+            }
+
+            $normalized = trim($candidate);
+            if ($normalized !== '') {
+                return $normalized;
+            }
+        }
+
+        return '';
+    }
+
+    private function normalizeDurationMinutes(mixed $value): ?int
+    {
+        if (! is_numeric($value)) {
+            return null;
+        }
+
+        $duration = (int) round((float) $value);
+
+        if ($duration < 15 || $duration > 720) {
+            return null;
+        }
+
+        return $duration;
+    }
+
+    private function isRequiredFieldValuePresent(string $field, array $values): bool
+    {
+        return match ($field) {
+            'client_name',
+            'phone',
+            'service_name',
+            'address',
+            'note' => trim((string) ($values[$field] ?? '')) !== '',
+            'amount' => (bool) ($values['amount_set'] ?? false),
+            'appointment_date',
+            'appointment_time' => trim((string) ($values[$field] ?? '')) !== '',
+            'appointment_duration_minutes' => is_int($values['appointment_duration_minutes'] ?? null),
+            default => true,
+        };
     }
 
     private function appointmentsEnabledForCompany(Company $company): bool
