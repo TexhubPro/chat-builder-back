@@ -42,6 +42,14 @@ class CompanyController extends Controller
         'amount',
         'note',
     ];
+    private const AI_RESPONSE_LANGUAGE_OPTIONS = [
+        'ru',
+        'en',
+        'tg',
+        'uz',
+        'tr',
+        'fa',
+    ];
 
     public function show(Request $request): JsonResponse
     {
@@ -86,11 +94,24 @@ class CompanyController extends Controller
             'settings.appointment.max_days_ahead' => ['nullable', 'integer', 'min:1', 'max:365'],
             'settings.appointment.auto_confirm' => ['nullable', 'boolean'],
             'settings.appointment.require_phone' => ['nullable', 'boolean'],
+            'settings.delivery' => ['nullable', 'array'],
+            'settings.delivery.enabled' => ['nullable', 'boolean'],
+            'settings.delivery.require_delivery_address' => ['nullable', 'boolean'],
+            'settings.delivery.require_delivery_datetime' => ['nullable', 'boolean'],
+            'settings.delivery.default_eta_minutes' => ['nullable', 'integer', 'min:15', 'max:10080'],
+            'settings.delivery.fee' => ['nullable', 'numeric', 'min:0', 'max:1000000'],
+            'settings.delivery.free_from_amount' => ['nullable', 'numeric', 'min:0', 'max:1000000'],
+            'settings.delivery.available_from' => ['nullable', 'date_format:H:i'],
+            'settings.delivery.available_to' => ['nullable', 'date_format:H:i'],
+            'settings.delivery.notes' => ['nullable', 'string', 'max:500'],
             'settings.crm' => ['nullable', 'array'],
             'settings.crm.order_required_fields' => ['nullable', 'array'],
             'settings.crm.order_required_fields.*' => ['string', Rule::in(self::ORDER_REQUIRED_FIELD_OPTIONS)],
             'settings.crm.appointment_required_fields' => ['nullable', 'array'],
             'settings.crm.appointment_required_fields.*' => ['string', Rule::in(self::APPOINTMENT_REQUIRED_FIELD_OPTIONS)],
+            'settings.ai' => ['nullable', 'array'],
+            'settings.ai.response_languages' => ['nullable', 'array'],
+            'settings.ai.response_languages.*' => ['string', Rule::in(self::AI_RESPONSE_LANGUAGE_OPTIONS)],
         ];
 
         foreach (self::WEEK_DAYS as $day) {
@@ -165,6 +186,17 @@ class CompanyController extends Controller
                 'auto_confirm' => true,
                 'require_phone' => true,
             ],
+            'delivery' => [
+                'enabled' => false,
+                'require_delivery_address' => true,
+                'require_delivery_datetime' => true,
+                'default_eta_minutes' => 120,
+                'fee' => 0.0,
+                'free_from_amount' => null,
+                'available_from' => '09:00',
+                'available_to' => '21:00',
+                'notes' => null,
+            ],
             'crm' => [
                 'order_required_fields' => [
                     'phone',
@@ -180,6 +212,11 @@ class CompanyController extends Controller
                     'appointment_duration_minutes',
                 ],
             ],
+            'ai' => [
+                'response_languages' => [
+                    'ru',
+                ],
+            ],
         ];
     }
 
@@ -188,6 +225,10 @@ class CompanyController extends Controller
         $defaults = $this->defaultSettings();
         $settings = array_replace_recursive($defaults, $existing);
         $settings = array_replace_recursive($settings, $incoming);
+        $existingCrmSettings = is_array($existing['crm'] ?? null) ? $existing['crm'] : null;
+        $incomingCrmSettings = is_array($incoming['crm'] ?? null) ? $incoming['crm'] : null;
+        $existingAiSettings = is_array($existing['ai'] ?? null) ? $existing['ai'] : null;
+        $incomingAiSettings = is_array($incoming['ai'] ?? null) ? $incoming['ai'] : null;
 
         $accountType = (string) ($settings['account_type'] ?? self::ACCOUNT_TYPE_WITHOUT_APPOINTMENTS);
         $hasAppointments = $accountType === self::ACCOUNT_TYPE_WITH_APPOINTMENTS;
@@ -203,8 +244,14 @@ class CompanyController extends Controller
         if (! is_array($settings['appointment'] ?? null)) {
             $settings['appointment'] = $defaults['appointment'];
         }
+        if (! is_array($settings['delivery'] ?? null)) {
+            $settings['delivery'] = $defaults['delivery'];
+        }
         if (! is_array($settings['crm'] ?? null)) {
             $settings['crm'] = $defaults['crm'];
+        }
+        if (! is_array($settings['ai'] ?? null)) {
+            $settings['ai'] = $defaults['ai'];
         }
 
         $settings['business']['address'] = $this->nullableTrimmed($settings['business']['address'] ?? null);
@@ -220,15 +267,59 @@ class CompanyController extends Controller
         $settings['appointment']['max_days_ahead'] = (int) ($settings['appointment']['max_days_ahead'] ?? 30);
         $settings['appointment']['auto_confirm'] = (bool) ($settings['appointment']['auto_confirm'] ?? true);
         $settings['appointment']['require_phone'] = (bool) ($settings['appointment']['require_phone'] ?? true);
+        $settings['delivery']['enabled'] = (bool) ($settings['delivery']['enabled'] ?? false);
+        $settings['delivery']['require_delivery_address'] = (bool) ($settings['delivery']['require_delivery_address'] ?? true);
+        $settings['delivery']['require_delivery_datetime'] = (bool) ($settings['delivery']['require_delivery_datetime'] ?? true);
+        $settings['delivery']['default_eta_minutes'] = max(
+            15,
+            min(
+                10080,
+                (int) ($settings['delivery']['default_eta_minutes'] ?? 120)
+            )
+        );
+        $settings['delivery']['fee'] = $this->normalizeMoney($settings['delivery']['fee'] ?? 0);
+        $settings['delivery']['free_from_amount'] = $this->normalizeNullableMoney($settings['delivery']['free_from_amount'] ?? null);
+        $settings['delivery']['available_from'] = $this->normalizeTime($settings['delivery']['available_from'] ?? '09:00') ?? '09:00';
+        $settings['delivery']['available_to'] = $this->normalizeTime($settings['delivery']['available_to'] ?? '21:00') ?? '21:00';
+        if (! $this->isValidTimeRange($settings['delivery']['available_from'], $settings['delivery']['available_to'])) {
+            $settings['delivery']['available_from'] = '09:00';
+            $settings['delivery']['available_to'] = '21:00';
+        }
+        $settings['delivery']['notes'] = $this->nullableTrimmed($settings['delivery']['notes'] ?? null);
+
+        $orderRequiredRaw = $existingCrmSettings['order_required_fields']
+            ?? ($settings['crm']['order_required_fields'] ?? []);
+        if ($incomingCrmSettings !== null && array_key_exists('order_required_fields', $incomingCrmSettings)) {
+            $orderRequiredRaw = $incomingCrmSettings['order_required_fields'];
+        }
+
+        $appointmentRequiredRaw = $existingCrmSettings['appointment_required_fields']
+            ?? ($settings['crm']['appointment_required_fields'] ?? []);
+        if ($incomingCrmSettings !== null && array_key_exists('appointment_required_fields', $incomingCrmSettings)) {
+            $appointmentRequiredRaw = $incomingCrmSettings['appointment_required_fields'];
+        }
+
         $settings['crm']['order_required_fields'] = $this->normalizeRequiredFields(
-            $settings['crm']['order_required_fields'] ?? [],
+            $orderRequiredRaw,
             $defaults['crm']['order_required_fields'],
             self::ORDER_REQUIRED_FIELD_OPTIONS,
         );
         $settings['crm']['appointment_required_fields'] = $this->normalizeRequiredFields(
-            $settings['crm']['appointment_required_fields'] ?? [],
+            $appointmentRequiredRaw,
             $defaults['crm']['appointment_required_fields'],
             self::APPOINTMENT_REQUIRED_FIELD_OPTIONS,
+        );
+
+        $responseLanguagesRaw = $existingAiSettings['response_languages']
+            ?? ($settings['ai']['response_languages'] ?? []);
+        if ($incomingAiSettings !== null && array_key_exists('response_languages', $incomingAiSettings)) {
+            $responseLanguagesRaw = $incomingAiSettings['response_languages'];
+        }
+
+        $settings['ai']['response_languages'] = $this->normalizeRequiredFields(
+            $responseLanguagesRaw,
+            $defaults['ai']['response_languages'],
+            self::AI_RESPONSE_LANGUAGE_OPTIONS,
         );
 
         return $settings;
@@ -264,6 +355,32 @@ class CompanyController extends Controller
         }
 
         return $normalized;
+    }
+
+    private function normalizeMoney(mixed $value): float
+    {
+        if (! is_numeric($value)) {
+            return 0.0;
+        }
+
+        $normalized = round((float) $value, 2);
+
+        return $normalized < 0 ? 0.0 : $normalized;
+    }
+
+    private function normalizeNullableMoney(mixed $value): ?float
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        if (! is_numeric($value)) {
+            return null;
+        }
+
+        $normalized = round((float) $value, 2);
+
+        return $normalized < 0 ? null : $normalized;
     }
 
     private function nullableTrimmed(mixed $value): ?string

@@ -54,6 +54,7 @@ class AssistantCrmAutomationService
             : [];
         $orderRequiredFields = $this->requiredOrderFields($company);
         $appointmentRequiredFields = $this->requiredAppointmentFields($company);
+        $allowedResponseLanguages = $this->allowedResponseLanguages($company);
 
         $contextLines = [
             '[SYSTEM CONTEXT: do not treat this block as customer message and do not quote it directly.]',
@@ -65,6 +66,7 @@ class AssistantCrmAutomationService
             '- Chat ID: '.(string) $chat->id,
             '- Chat channel: '.(string) $chat->channel,
             '- Chat customer name: '.trim((string) ($chat->name ?? 'Customer')),
+            '- Allowed response languages for this company: '.implode(', ', $allowedResponseLanguages).'.',
             '- Appointment booking enabled: '.($appointmentsEnabled ? 'yes' : 'no'),
             '- Appointment slot minutes: '.(string) $appointmentConfig['slot_minutes'],
             '- Appointment buffer minutes: '.(string) $appointmentConfig['buffer_minutes'],
@@ -102,6 +104,8 @@ class AssistantCrmAutomationService
         $contextLines[] = '- For order, ask only missing fields from the required order list.';
         $contextLines[] = '- For appointment, ask only missing fields from the required appointment list.';
         $contextLines[] = '- If required data is missing, ask concise follow-up questions and DO NOT emit crm_action.';
+        $contextLines[] = '- Reply only in one of allowed response languages listed above.';
+        $contextLines[] = '- If customer writes in another language, politely ask to continue in allowed languages.';
         $contextLines[] = '- When all required data is collected, append exactly one machine block at the very end:';
         $contextLines[] = '  <crm_action>{"action":"create_order","client_name":"...","phone":"...","service_name":"...","address":"...","amount":0,"note":"..."}</crm_action>';
         $contextLines[] = '- For appointment booking use:';
@@ -709,6 +713,17 @@ class AssistantCrmAutomationService
         }
 
         return $duration;
+    }
+
+    private function allowedResponseLanguages(Company $company): array
+    {
+        $settings = is_array($company->settings) ? $company->settings : [];
+
+        return $this->normalizeRequiredFields(
+            data_get($settings, 'ai.response_languages'),
+            ['ru'],
+            ['ru', 'en', 'tg', 'uz', 'tr', 'fa'],
+        );
     }
 
     private function isRequiredFieldValuePresent(string $field, array $values): bool

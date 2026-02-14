@@ -910,6 +910,92 @@ test('chat api assistant reply can auto-create client request from crm action bl
     expect((int) data_get($order?->metadata, 'chat_id'))->toBe($chat->id);
 });
 
+test('chat api assistant reply respects custom required order fields from company settings', function () {
+    [$user, $company, $token] = chatApiContext();
+
+    config()->set('openai.assistant.api_key', 'test-openai-key');
+
+    $company->forceFill([
+        'settings' => [
+            'crm' => [
+                'order_required_fields' => ['phone'],
+                'appointment_required_fields' => [
+                    'phone',
+                    'service_name',
+                    'address',
+                    'appointment_date',
+                    'appointment_time',
+                    'appointment_duration_minutes',
+                ],
+            ],
+            'ai' => [
+                'response_languages' => ['ru', 'en'],
+            ],
+        ],
+    ])->save();
+
+    $assistant = Assistant::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'name' => 'CRM Assistant Flexible',
+        'openai_assistant_id' => 'asst_crm_action_required_1',
+        'is_active' => true,
+    ]);
+
+    $chat = Chat::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'assistant_id' => $assistant->id,
+        'channel' => 'assistant',
+        'channel_chat_id' => 'assistant-crm-action-required-1',
+        'channel_user_id' => 'assistant-crm-customer-required-1',
+        'name' => 'CRM Customer Required',
+        'metadata' => [],
+    ]);
+
+    $this->mock(OpenAiAssistantClient::class, function (MockInterface $mock): void {
+        $mock->shouldReceive('createThread')->once()->andReturn('thread_crm_action_required_1');
+        $mock->shouldReceive('sendTextMessage')
+            ->once()
+            ->withArgs(function (...$args): bool {
+                $prompt = (string) ($args[1] ?? '');
+
+                return str_contains($prompt, 'Required fields for order in this company: phone.')
+                    && str_contains($prompt, 'Allowed response languages for this company: ru, en.');
+            })
+            ->andReturn('message_crm_action_required_1');
+        $mock->shouldReceive('runThreadAndGetResponse')
+            ->once()
+            ->andReturn('<crm_action>{"action":"create_order","phone":"+992900111777"}</crm_action>');
+    });
+
+    $this
+        ->withHeader('Authorization', "Bearer {$token}")
+        ->postJson('/api/chats/'.$chat->id.'/assistant-reply', [
+            'assistant_id' => $assistant->id,
+            'prompt' => 'Оформите заявку.',
+        ])
+        ->assertCreated()
+        ->assertJsonPath('assistant_message.text', 'Заявка сохранена.');
+
+    $client = CompanyClient::query()
+        ->where('company_id', $company->id)
+        ->where('phone', '+992900111777')
+        ->first();
+
+    expect($client)->not->toBeNull();
+
+    $order = CompanyClientOrder::query()
+        ->where('company_id', $company->id)
+        ->where('company_client_id', $client?->id)
+        ->latest('id')
+        ->first();
+
+    expect($order)->not->toBeNull();
+    expect((string) $order?->service_name)->toBe('Order request');
+    expect((array) data_get($order?->metadata, 'required_fields', []))->toBe(['phone']);
+});
+
 test('chat api assistant reply can auto-create appointment request from crm action block', function () {
     [$user, $company, $token] = chatApiContext();
 

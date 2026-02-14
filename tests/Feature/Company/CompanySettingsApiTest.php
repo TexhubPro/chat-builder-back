@@ -36,6 +36,20 @@ test('company settings api returns default company profile and settings', functi
     expect($response['company']['settings']['business']['schedule']['sunday']['is_day_off'])->toBeTrue();
     expect($response['company']['settings']['business']['schedule']['sunday']['start_time'])->toBeNull();
     expect($response['company']['settings']['business']['schedule']['sunday']['end_time'])->toBeNull();
+    expect($response['company']['settings']['crm']['order_required_fields'])->toBe([
+        'phone',
+        'service_name',
+        'address',
+    ]);
+    expect($response['company']['settings']['crm']['appointment_required_fields'])->toBe([
+        'phone',
+        'service_name',
+        'address',
+        'appointment_date',
+        'appointment_time',
+        'appointment_duration_minutes',
+    ]);
+    expect($response['company']['settings']['ai']['response_languages'])->toBe(['ru']);
 });
 
 test('company settings api updates company data and appointment settings', function () {
@@ -76,6 +90,17 @@ test('company settings api updates company data and appointment settings', funct
                 'auto_confirm' => false,
                 'require_phone' => true,
             ],
+            'crm' => [
+                'order_required_fields' => ['phone', 'service_name'],
+                'appointment_required_fields' => [
+                    'phone',
+                    'appointment_date',
+                    'appointment_time',
+                ],
+            ],
+            'ai' => [
+                'response_languages' => ['ru', 'en', 'tg'],
+            ],
         ],
     ];
 
@@ -104,6 +129,20 @@ test('company settings api updates company data and appointment settings', funct
     expect($response['company']['settings']['business']['schedule']['sunday']['is_day_off'])->toBeTrue();
     expect($response['company']['settings']['business']['schedule']['sunday']['start_time'])->toBeNull();
     expect($response['company']['settings']['business']['schedule']['sunday']['end_time'])->toBeNull();
+    expect($response['company']['settings']['crm']['order_required_fields'])->toBe([
+        'phone',
+        'service_name',
+    ]);
+    expect($response['company']['settings']['crm']['appointment_required_fields'])->toBe([
+        'phone',
+        'appointment_date',
+        'appointment_time',
+    ]);
+    expect($response['company']['settings']['ai']['response_languages'])->toBe([
+        'ru',
+        'en',
+        'tg',
+    ]);
 });
 
 test('company settings api validates account type', function () {
