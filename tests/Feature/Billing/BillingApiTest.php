@@ -1,10 +1,13 @@
 <?php
 
 use App\Models\CompanySubscription;
+use App\Models\Company;
 use App\Models\Invoice;
 use App\Models\SubscriptionPlan;
 use App\Models\User;
+use App\Services\CompanySubscriptionService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Mockery\MockInterface;
 
 uses(RefreshDatabase::class);
 
@@ -122,6 +125,105 @@ test('paying invoice activates subscription', function () {
         ->json();
 
     $invoiceId = (int) $checkoutResponse['invoice']['id'];
+
+    $this
+        ->withHeader('Authorization', "Bearer {$token}")
+        ->postJson("/api/billing/invoices/{$invoiceId}/pay")
+        ->assertOk()
+        ->assertJsonPath('invoice.status', Invoice::STATUS_PAID)
+        ->assertJsonPath('subscription.status', CompanySubscription::STATUS_ACTIVE);
+});
+
+test('paying invoice by number activates subscription', function () {
+    $user = User::factory()->create([
+        'status' => true,
+        'email_verified_at' => now(),
+    ]);
+
+    $plan = SubscriptionPlan::query()->create([
+        'code' => 'starter-pay-by-number',
+        'name' => 'Starter Pay By Number',
+        'is_active' => true,
+        'is_public' => true,
+        'billing_period_days' => 30,
+        'currency' => 'TJS',
+        'price' => 90,
+        'included_chats' => 500,
+        'overage_chat_price' => 1,
+        'assistant_limit' => 1,
+        'integrations_per_channel_limit' => 1,
+    ]);
+
+    $token = billingTokenFor($user);
+
+    $checkoutResponse = $this
+        ->withHeader('Authorization', "Bearer {$token}")
+        ->postJson('/api/billing/checkout', [
+            'plan_code' => $plan->code,
+            'quantity' => 1,
+        ])
+        ->assertCreated()
+        ->json();
+
+    $invoiceNumber = (string) $checkoutResponse['invoice']['number'];
+
+    $this
+        ->withHeader('Authorization', "Bearer {$token}")
+        ->postJson("/api/billing/invoices/{$invoiceNumber}/pay")
+        ->assertOk()
+        ->assertJsonPath('invoice.status', Invoice::STATUS_PAID)
+        ->assertJsonPath('subscription.status', CompanySubscription::STATUS_ACTIVE);
+});
+
+test('paying own invoice is resolved by invoice ownership, not workspace lookup', function () {
+    $user = User::factory()->create([
+        'status' => true,
+        'email_verified_at' => now(),
+    ]);
+
+    $plan = SubscriptionPlan::query()->create([
+        'code' => 'starter-pay-ownership',
+        'name' => 'Starter Ownership',
+        'is_active' => true,
+        'is_public' => true,
+        'billing_period_days' => 30,
+        'currency' => 'TJS',
+        'price' => 50,
+        'included_chats' => 200,
+        'overage_chat_price' => 1,
+        'assistant_limit' => 1,
+        'integrations_per_channel_limit' => 1,
+    ]);
+
+    $token = billingTokenFor($user);
+
+    $checkoutResponse = $this
+        ->withHeader('Authorization', "Bearer {$token}")
+        ->postJson('/api/billing/checkout', [
+            'plan_code' => $plan->code,
+            'quantity' => 1,
+        ])
+        ->assertCreated()
+        ->json();
+
+    $invoiceId = (int) $checkoutResponse['invoice']['id'];
+
+    $otherUser = User::factory()->create([
+        'status' => true,
+        'email_verified_at' => now(),
+    ]);
+
+    $otherCompany = Company::query()->create([
+        'user_id' => $otherUser->id,
+        'name' => 'Other Company',
+        'slug' => 'other-company-' . $otherUser->id,
+        'status' => Company::STATUS_ACTIVE,
+    ]);
+
+    $this->partialMock(CompanySubscriptionService::class, function (MockInterface $mock) use ($otherCompany): void {
+        $mock->shouldReceive('provisionDefaultWorkspaceForUser')
+            ->andReturn($otherCompany);
+    });
 
     $this
         ->withHeader('Authorization', "Bearer {$token}")

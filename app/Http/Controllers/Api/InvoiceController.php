@@ -33,27 +33,35 @@ class InvoiceController extends Controller
         ]);
     }
 
-    public function pay(Request $request, Invoice $invoice): JsonResponse
+    public function pay(Request $request, string $invoice): JsonResponse
     {
         $user = $this->resolveUser($request);
-        $company = $invoice->company;
+        $invoiceModel = $this->resolveInvoiceForPayment($invoice, $user->id);
 
-        if (!$company || (int) $company->user_id !== (int) $user->id) {
+        if (!$invoiceModel) {
             return response()->json([
                 'message' => 'Invoice not found.',
             ], 404);
         }
 
-        if ($invoice->status === Invoice::STATUS_PAID) {
+        $company = $invoiceModel->company;
+
+        if (!$company) {
+            return response()->json([
+                'message' => 'Invoice not found.',
+            ], 404);
+        }
+
+        if ($invoiceModel->status === Invoice::STATUS_PAID) {
             return response()->json([
                 'message' => 'Invoice is already paid.',
-                'invoice' => $invoice,
+                'invoice' => $invoiceModel,
                 'subscription' => $company->subscription()->with('plan')->first(),
             ]);
         }
 
         if ($this->alifMode() === 'local') {
-            [$paidInvoice, $subscription] = $this->markInvoiceAsPaidAndActivateSubscription($invoice);
+            [$paidInvoice, $subscription] = $this->markInvoiceAsPaidAndActivateSubscription($invoiceModel);
 
             return response()->json([
                 'message' => 'Payment completed successfully.',
@@ -62,10 +70,10 @@ class InvoiceController extends Controller
             ]);
         }
 
-        $amount = (float) $invoice->total;
+        $amount = (float) $invoiceModel->total;
 
         if ($amount <= 0) {
-            [$paidInvoice, $subscription] = $this->markInvoiceAsPaidAndActivateSubscription($invoice);
+            [$paidInvoice, $subscription] = $this->markInvoiceAsPaidAndActivateSubscription($invoiceModel);
 
             return response()->json([
                 'message' => 'Payment completed successfully.',
@@ -74,7 +82,7 @@ class InvoiceController extends Controller
             ]);
         }
 
-        $paymentSession = $this->buildAlifPaymentSession($invoice, $user);
+        $paymentSession = $this->buildAlifPaymentSession($invoiceModel, $user);
 
         if (!$paymentSession) {
             return response()->json([
@@ -82,9 +90,9 @@ class InvoiceController extends Controller
             ], 422);
         }
 
-        $invoice = DB::transaction(function () use ($invoice, $paymentSession): Invoice {
+        $invoiceModel = DB::transaction(function () use ($invoiceModel, $paymentSession): Invoice {
             $metadata = $this->mergeInvoiceMetadata(
-                $invoice->metadata,
+                $invoiceModel->metadata,
                 [
                     'alif' => [
                         'mode' => $paymentSession['mode'],
@@ -96,19 +104,19 @@ class InvoiceController extends Controller
                 ],
             );
 
-            $invoice->forceFill([
+            $invoiceModel->forceFill([
                 'status' => Invoice::STATUS_PENDING,
                 'metadata' => $metadata,
                 'paid_at' => null,
                 'amount_paid' => '0.00',
             ])->save();
 
-            return $invoice->fresh();
+            return $invoiceModel->fresh();
         });
 
         return response()->json([
             'message' => 'Payment session created. Continue in Alif.',
-            'invoice' => $invoice,
+            'invoice' => $invoiceModel,
             'subscription' => $company->subscription()->with('plan')->first(),
             'payment' => $paymentSession,
         ]);
@@ -429,6 +437,27 @@ class InvoiceController extends Controller
         }
 
         return 'pending';
+    }
+
+    private function resolveInvoiceForPayment(string $invoiceIdentifier, int $userId): ?Invoice
+    {
+        $query = Invoice::query()->whereHas('company', function ($builder) use ($userId): void {
+            $builder->where('user_id', $userId);
+        });
+
+        if (ctype_digit($invoiceIdentifier)) {
+            $invoiceById = (clone $query)
+                ->whereKey((int) $invoiceIdentifier)
+                ->first();
+
+            if ($invoiceById) {
+                return $invoiceById;
+            }
+        }
+
+        return (clone $query)
+            ->where('number', $invoiceIdentifier)
+            ->first();
     }
 
     private function mergeInvoiceMetadata(mixed $currentMetadata, array $patch): array
