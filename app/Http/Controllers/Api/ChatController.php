@@ -9,6 +9,7 @@ use App\Models\Chat;
 use App\Models\ChatMessage;
 use App\Models\Company;
 use App\Models\CompanyClient;
+use App\Models\CompanyCalendarEvent;
 use App\Models\CompanyClientOrder;
 use App\Models\CompanyClientQuestion;
 use App\Models\CompanyClientTask;
@@ -243,6 +244,10 @@ class ChatController extends Controller
             'amount' => ['nullable', 'numeric', 'min:0'],
             'note' => ['nullable', 'string', 'max:2000'],
             'chat_message_id' => ['nullable', 'integer'],
+            'book_appointment' => ['nullable', 'boolean'],
+            'appointment_date' => ['nullable', 'date_format:Y-m-d'],
+            'appointment_time' => ['nullable', 'date_format:H:i'],
+            'appointment_duration_minutes' => ['nullable', 'integer', 'min:15', 'max:720'],
         ]);
 
         $user = $this->resolveUser($request);
@@ -300,6 +305,79 @@ class ChatController extends Controller
             : 0.0;
         $note = trim((string) ($validated['note'] ?? ''));
 
+        $bookAppointment = (bool) ($validated['book_appointment'] ?? false);
+        $appointmentDate = trim((string) ($validated['appointment_date'] ?? ''));
+        $appointmentTime = trim((string) ($validated['appointment_time'] ?? ''));
+        $appointmentDurationMinutes = isset($validated['appointment_duration_minutes'])
+            ? (int) $validated['appointment_duration_minutes']
+            : null;
+
+        if ($bookAppointment) {
+            if (! $this->appointmentsEnabledForCompany($company)) {
+                return response()->json([
+                    'message' => 'Appointments are disabled for this company.',
+                ], 422);
+            }
+
+            if ($appointmentDate === '' || $appointmentTime === '' || $appointmentDurationMinutes === null) {
+                return response()->json([
+                    'message' => 'appointment_date, appointment_time and appointment_duration_minutes are required when book_appointment is enabled.',
+                ], 422);
+            }
+        }
+
+        $calendarEvent = null;
+        if ($bookAppointment) {
+            $timezone = $this->companyTimezone($company);
+            $startsAtLocal = Carbon::createFromFormat(
+                'Y-m-d H:i',
+                "{$appointmentDate} {$appointmentTime}",
+                $timezone
+            );
+            $endsAtLocal = (clone $startsAtLocal)->addMinutes($appointmentDurationMinutes ?? 0);
+
+            $startsAt = $startsAtLocal->copy()->utc();
+            $endsAt = $endsAtLocal->copy()->utc();
+
+            $calendarEvent = CompanyCalendarEvent::query()->create([
+                'user_id' => $company->user_id,
+                'company_id' => $company->id,
+                'company_client_id' => $client->id,
+                'assistant_id' => $chat->assistant_id,
+                'title' => 'Appointment: '.Str::limit($serviceNameInput, 120, ''),
+                'description' => $note !== '' ? Str::limit($note, 2000, '') : null,
+                'starts_at' => $startsAt,
+                'ends_at' => $endsAt,
+                'timezone' => $timezone,
+                'status' => CompanyCalendarEvent::STATUS_SCHEDULED,
+                'location' => Str::limit($addressInput, 255, ''),
+                'metadata' => array_filter([
+                    'source' => 'chat_order_booking',
+                    'chat_id' => $chat->id,
+                    'chat_message_id' => $chatMessageId,
+                    'phone' => $normalizedPhone,
+                ], static fn ($value): bool => $value !== null),
+            ]);
+        }
+
+        $orderMetadata = array_filter([
+            'source' => 'chat_info_panel',
+            'chat_id' => $chat->id,
+            'chat_message_id' => $chatMessageId,
+            'address' => $addressInput,
+            'phone' => $normalizedPhone,
+        ], static fn ($value): bool => $value !== null);
+
+        if ($calendarEvent) {
+            $orderMetadata['appointment'] = [
+                'calendar_event_id' => $calendarEvent->id,
+                'starts_at' => $calendarEvent->starts_at?->toIso8601String(),
+                'ends_at' => $calendarEvent->ends_at?->toIso8601String(),
+                'timezone' => $calendarEvent->timezone,
+                'duration_minutes' => $appointmentDurationMinutes,
+            ];
+        }
+
         $order = CompanyClientOrder::query()->create([
             'user_id' => $company->user_id,
             'company_id' => $company->id,
@@ -312,14 +390,17 @@ class ChatController extends Controller
             'currency' => 'TJS',
             'ordered_at' => now(),
             'notes' => $note !== '' ? Str::limit($note, 2000, '') : null,
-            'metadata' => array_filter([
-                'source' => 'chat_info_panel',
-                'chat_id' => $chat->id,
-                'chat_message_id' => $chatMessageId,
-                'address' => $addressInput,
-                'phone' => $normalizedPhone,
-            ], static fn ($value): bool => $value !== null),
+            'metadata' => $orderMetadata,
         ]);
+
+        if ($calendarEvent) {
+            $calendarMetadata = is_array($calendarEvent->metadata) ? $calendarEvent->metadata : [];
+            $calendarMetadata['order_id'] = $order->id;
+
+            $calendarEvent->forceFill([
+                'metadata' => $calendarMetadata,
+            ])->save();
+        }
 
         return response()->json([
             'message' => 'Order created successfully.',
@@ -1176,6 +1257,27 @@ class ChatController extends Controller
         }
 
         return null;
+    }
+
+    private function appointmentsEnabledForCompany(Company $company): bool
+    {
+        $settings = is_array($company->settings) ? $company->settings : [];
+        $accountType = (string) data_get($settings, 'account_type', 'without_appointments');
+        $appointmentEnabled = (bool) data_get($settings, 'appointment.enabled', false);
+
+        return $accountType === 'with_appointments' && $appointmentEnabled;
+    }
+
+    private function companyTimezone(Company $company): string
+    {
+        $settings = is_array($company->settings) ? $company->settings : [];
+        $timezone = data_get($settings, 'business.timezone');
+
+        if (! is_string($timezone) || ! in_array($timezone, timezone_identifiers_list(), true)) {
+            return (string) config('app.timezone', 'UTC');
+        }
+
+        return $timezone;
     }
 
     private function extractWebhookPayload(Request $request): array

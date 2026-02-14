@@ -5,6 +5,7 @@ use App\Models\AssistantChannel;
 use App\Models\Chat;
 use App\Models\ChatMessage;
 use App\Models\Company;
+use App\Models\CompanyCalendarEvent;
 use App\Models\CompanySubscription;
 use App\Models\CompanyClient;
 use App\Models\CompanyClientOrder;
@@ -1220,4 +1221,93 @@ test('chat api can create order from chat and link it in metadata', function () 
     expect($order)->not->toBeNull();
     expect((int) data_get($order?->metadata, 'chat_id'))->toBe($chat->id);
     expect((int) data_get($order?->metadata, 'chat_message_id'))->toBe($chatMessage->id);
+});
+
+test('chat api can create order with appointment booking when company supports appointments', function () {
+    [$user, $company, $token] = chatApiContext();
+
+    $company->forceFill([
+        'settings' => [
+            'account_type' => 'with_appointments',
+            'business' => [
+                'timezone' => 'Asia/Dushanbe',
+            ],
+            'appointment' => [
+                'enabled' => true,
+            ],
+        ],
+    ])->save();
+
+    $chat = Chat::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'channel' => 'assistant',
+        'channel_chat_id' => 'assistant-order-booking-1',
+        'channel_user_id' => 'assistant-user-order-booking-1',
+        'name' => 'Booking Lead',
+        'status' => Chat::STATUS_OPEN,
+        'metadata' => [],
+    ]);
+
+    $response = $this
+        ->withHeader('Authorization', "Bearer {$token}")
+        ->postJson('/api/chats/'.$chat->id.'/orders', [
+            'phone' => '+992901112233',
+            'service_name' => 'On-site consultation',
+            'address' => 'Dushanbe, Rudaki ave 1',
+            'book_appointment' => true,
+            'appointment_date' => '2026-02-20',
+            'appointment_time' => '14:30',
+            'appointment_duration_minutes' => 60,
+        ])
+        ->assertCreated()
+        ->json();
+
+    $orderId = (int) ($response['order']['record_id'] ?? 0);
+    expect($orderId)->toBeGreaterThan(0);
+
+    $order = CompanyClientOrder::query()->findOrFail($orderId);
+    $eventId = (int) data_get($order->metadata, 'appointment.calendar_event_id', 0);
+    expect($eventId)->toBeGreaterThan(0);
+
+    $event = CompanyCalendarEvent::query()->findOrFail($eventId);
+    expect((int) $event->company_id)->toBe((int) $company->id);
+    expect((int) $event->company_client_id)->toBe((int) $order->company_client_id);
+    expect($event->timezone)->toBe('Asia/Dushanbe');
+    expect($event->starts_at)->not->toBeNull();
+    expect($event->ends_at)->not->toBeNull();
+    expect($event->starts_at->copy()->timezone('Asia/Dushanbe')->format('Y-m-d H:i'))->toBe('2026-02-20 14:30');
+    expect($event->ends_at->copy()->timezone('Asia/Dushanbe')->format('Y-m-d H:i'))->toBe('2026-02-20 15:30');
+    expect((int) data_get($event->metadata, 'order_id'))->toBe((int) $order->id);
+});
+
+test('chat api rejects appointment booking when company appointments are disabled', function () {
+    [$user, $company, $token] = chatApiContext();
+
+    $chat = Chat::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'channel' => 'assistant',
+        'channel_chat_id' => 'assistant-order-booking-disabled-1',
+        'channel_user_id' => 'assistant-user-order-booking-disabled-1',
+        'name' => 'Booking Disabled Lead',
+        'status' => Chat::STATUS_OPEN,
+        'metadata' => [],
+    ]);
+
+    $this
+        ->withHeader('Authorization', "Bearer {$token}")
+        ->postJson('/api/chats/'.$chat->id.'/orders', [
+            'phone' => '+992901112244',
+            'service_name' => 'On-site consultation',
+            'address' => 'Dushanbe',
+            'book_appointment' => true,
+            'appointment_date' => '2026-02-20',
+            'appointment_time' => '14:30',
+            'appointment_duration_minutes' => 60,
+        ])
+        ->assertStatus(422)
+        ->assertJsonPath('message', 'Appointments are disabled for this company.');
+
+    expect(CompanyCalendarEvent::query()->count())->toBe(0);
 });
