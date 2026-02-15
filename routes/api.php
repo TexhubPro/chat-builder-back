@@ -19,6 +19,7 @@ use App\Http\Controllers\Api\InstagramIntegrationController;
 use App\Http\Controllers\Api\InvoiceController;
 use App\Http\Controllers\Api\SubscriptionPlanController;
 use App\Http\Controllers\Api\TelegramIntegrationController;
+use App\Http\Controllers\Api\WidgetChatController;
 use App\Http\Middleware\EnsureApiTokenIsValid;
 use App\Http\Middleware\EnsureUserIsActive;
 use Illuminate\Support\Facades\Route;
@@ -125,6 +126,16 @@ Route::post('/integrations/telegram/webhook/{assistantChannelId}', [TelegramInte
 Route::post('/chats/webhook/{channel}', [ChatController::class, 'webhook'])
     ->name('api.chats.webhook');
 
+Route::get('/widget/{widgetKey}/config', [WidgetChatController::class, 'config'])
+    ->name('api.widget.config');
+Route::get('/widget/{widgetKey}/messages', [WidgetChatController::class, 'messages'])
+    ->name('api.widget.messages');
+Route::post('/widget/{widgetKey}/messages', [WidgetChatController::class, 'storeMessage'])
+    ->name('api.widget.messages.store');
+Route::options('/widget/{widgetKey}/{any?}', [WidgetChatController::class, 'options'])
+    ->where('any', '.*')
+    ->name('api.widget.options');
+
 Route::prefix('assistants')
     ->middleware([
         EnsureUserIsActive::class,
@@ -151,6 +162,10 @@ Route::prefix('assistant-channels')
         Route::post('/{assistantId}/instagram/connect', [InstagramIntegrationController::class, 'redirect'])
             ->whereNumber('assistantId');
         Route::post('/{assistantId}/telegram/connect', [TelegramIntegrationController::class, 'connect'])
+            ->whereNumber('assistantId');
+        Route::get('/{assistantId}/widget/settings', [AssistantChannelController::class, 'widgetSettings'])
+            ->whereNumber('assistantId');
+        Route::put('/{assistantId}/widget/settings', [AssistantChannelController::class, 'updateWidgetSettings'])
             ->whereNumber('assistantId');
         Route::patch('/{assistantId}/{channel}', [AssistantChannelController::class, 'update'])
             ->whereNumber('assistantId');

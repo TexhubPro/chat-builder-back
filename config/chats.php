@@ -8,5 +8,7 @@ return [
         'widget',
         'api',
     ],
+    'widget' => [
+        'auto_reply_enabled' => filter_var(env('WIDGET_AUTO_REPLY_ENABLED', true), FILTER_VALIDATE_BOOL),
+    ],
 ];
-

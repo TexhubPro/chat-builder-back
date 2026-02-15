@@ -155,6 +155,11 @@ class AssistantChannelController extends Controller
             $assistantChannel->metadata = array_key_exists('metadata', $validated)
                 ? (is_array($validated['metadata']) ? $validated['metadata'] : [])
                 : $assistantChannel->metadata;
+
+            if ($normalizedChannel === AssistantChannel::CHANNEL_WIDGET) {
+                $this->ensureWidgetChannelDefaults($assistantChannel, $assistant, $company);
+            }
+
             $assistantChannel->is_active = true;
             $assistantChannel->save();
 
@@ -251,6 +256,101 @@ class AssistantChannelController extends Controller
         ]);
     }
 
+    public function widgetSettings(Request $request, int $assistantId): JsonResponse
+    {
+        $user = $this->resolveUser($request);
+        $company = $this->resolveCompany($user);
+        $this->subscriptionService()->syncAssistantAccess($company);
+
+        $assistant = $company->assistants()->whereKey($assistantId)->first();
+        if (! $assistant) {
+            return response()->json([
+                'message' => 'Assistant not found.',
+            ], 404);
+        }
+
+        $assistantChannel = AssistantChannel::query()
+            ->where('assistant_id', $assistant->id)
+            ->where('channel', AssistantChannel::CHANNEL_WIDGET)
+            ->first();
+
+        if (! $assistantChannel) {
+            return response()->json([
+                'message' => 'Widget channel is not connected.',
+            ], 404);
+        }
+
+        $this->ensureWidgetChannelDefaults($assistantChannel, $assistant, $company);
+        $assistantChannel->save();
+
+        return response()->json([
+            'message' => 'Widget settings loaded successfully.',
+            'channel' => $this->channelPayload($assistantChannel->refresh()),
+            'widget' => $this->widgetSettingsPayload($assistantChannel, $assistant, $company),
+        ]);
+    }
+
+    public function updateWidgetSettings(Request $request, int $assistantId): JsonResponse
+    {
+        $validated = $request->validate([
+            'position' => ['nullable', 'string', 'in:bottom-right,bottom-left'],
+            'theme' => ['nullable', 'string', 'in:light,dark'],
+            'primary_color' => ['nullable', 'string', 'max:16'],
+            'title' => ['nullable', 'string', 'max:120'],
+            'welcome_message' => ['nullable', 'string', 'max:500'],
+            'placeholder' => ['nullable', 'string', 'max:180'],
+            'launcher_label' => ['nullable', 'string', 'max:60'],
+        ]);
+
+        $user = $this->resolveUser($request);
+        $company = $this->resolveCompany($user);
+        $this->subscriptionService()->syncAssistantAccess($company);
+
+        $assistant = $company->assistants()->whereKey($assistantId)->first();
+        if (! $assistant) {
+            return response()->json([
+                'message' => 'Assistant not found.',
+            ], 404);
+        }
+
+        $assistantChannel = AssistantChannel::query()
+            ->where('assistant_id', $assistant->id)
+            ->where('channel', AssistantChannel::CHANNEL_WIDGET)
+            ->first();
+
+        if (! $assistantChannel) {
+            return response()->json([
+                'message' => 'Widget channel is not connected.',
+            ], 404);
+        }
+
+        $settings = array_replace(
+            $this->normalizeWidgetSettings(
+                is_array($assistantChannel->settings) ? $assistantChannel->settings : [],
+                $assistant,
+                $company
+            ),
+            array_filter([
+                'position' => $validated['position'] ?? null,
+                'theme' => $validated['theme'] ?? null,
+                'primary_color' => $this->normalizeWidgetColor($validated['primary_color'] ?? null),
+                'title' => $this->nullableTrimmedString($validated['title'] ?? null),
+                'welcome_message' => $this->nullableTrimmedString($validated['welcome_message'] ?? null),
+                'placeholder' => $this->nullableTrimmedString($validated['placeholder'] ?? null),
+                'launcher_label' => $this->nullableTrimmedString($validated['launcher_label'] ?? null),
+            ], static fn (mixed $value): bool => $value !== null)
+        );
+
+        $assistantChannel->settings = $this->normalizeWidgetSettings($settings, $assistant, $company);
+        $assistantChannel->save();
+
+        return response()->json([
+            'message' => 'Widget settings updated successfully.',
+            'channel' => $this->channelPayload($assistantChannel->refresh()),
+            'widget' => $this->widgetSettingsPayload($assistantChannel, $assistant, $company),
+        ]);
+    }
+
     private function channelsPayloadForAssistant(Company $company, int $assistantId): array
     {
         $rows = AssistantChannel::query()
@@ -283,6 +383,34 @@ class AssistantChannelController extends Controller
             'settings' => is_array($assistantChannel->settings) ? $assistantChannel->settings : [],
             'metadata' => is_array($assistantChannel->metadata) ? $assistantChannel->metadata : [],
             'updated_at' => $assistantChannel->updated_at?->toIso8601String(),
+        ];
+    }
+
+    private function widgetSettingsPayload(
+        AssistantChannel $assistantChannel,
+        Assistant $assistant,
+        Company $company,
+    ): array {
+        $credentials = is_array($assistantChannel->credentials) ? $assistantChannel->credentials : [];
+        $widgetKey = $this->nullableTrimmedString($credentials['widget_key'] ?? null);
+        $settings = $this->normalizeWidgetSettings(
+            is_array($assistantChannel->settings) ? $assistantChannel->settings : [],
+            $assistant,
+            $company
+        );
+
+        $scriptUrl = url('/widget/chat-widget.js');
+        $apiBaseUrl = url('/api/widget');
+        $embedScriptTag = $widgetKey === null
+            ? null
+            : '<script src="'.$scriptUrl.'" data-widget-key="'.$widgetKey.'" defer></script>';
+
+        return [
+            'widget_key' => $widgetKey,
+            'settings' => $settings,
+            'script_url' => $scriptUrl,
+            'api_base_url' => $apiBaseUrl,
+            'embed_script_tag' => $embedScriptTag,
         ];
     }
 
@@ -352,6 +480,100 @@ class AssistantChannelController extends Controller
         $normalized = trim($value);
 
         return $normalized === '' ? null : $normalized;
+    }
+
+    private function ensureWidgetChannelDefaults(
+        AssistantChannel $assistantChannel,
+        Assistant $assistant,
+        Company $company,
+    ): void {
+        $credentials = is_array($assistantChannel->credentials) ? $assistantChannel->credentials : [];
+        $widgetKey = $this->nullableTrimmedString($credentials['widget_key'] ?? null);
+
+        if ($widgetKey === null) {
+            $widgetKey = $this->generateUniqueWidgetKey();
+        }
+
+        $credentials = array_replace($credentials, [
+            'provider' => 'widget',
+            'widget_key' => $widgetKey,
+            'connected_at' => $credentials['connected_at'] ?? now()->toIso8601String(),
+        ]);
+
+        $assistantChannel->credentials = $credentials;
+        $assistantChannel->settings = $this->normalizeWidgetSettings(
+            is_array($assistantChannel->settings) ? $assistantChannel->settings : [],
+            $assistant,
+            $company
+        );
+
+        if ($this->nullableTrimmedString($assistantChannel->name) === null) {
+            $assistantChannel->name = 'Web Widget';
+        }
+
+        if ($this->nullableTrimmedString($assistantChannel->external_account_id) === null) {
+            $assistantChannel->external_account_id = 'widget-'.substr($widgetKey, 0, 12);
+        }
+    }
+
+    private function normalizeWidgetSettings(
+        array $settings,
+        Assistant $assistant,
+        Company $company,
+    ): array {
+        $assistantName = $this->nullableTrimmedString($assistant->name) ?? 'Assistant';
+        $companyName = $this->nullableTrimmedString($company->name) ?? 'Company';
+
+        return [
+            'position' => in_array((string) ($settings['position'] ?? ''), ['bottom-right', 'bottom-left'], true)
+                ? (string) $settings['position']
+                : 'bottom-right',
+            'theme' => in_array((string) ($settings['theme'] ?? ''), ['light', 'dark'], true)
+                ? (string) $settings['theme']
+                : 'light',
+            'primary_color' => $this->normalizeWidgetColor($settings['primary_color'] ?? null) ?? '#1677FF',
+            'title' => $this->nullableTrimmedString($settings['title'] ?? null)
+                ?? ($companyName.' Chat'),
+            'welcome_message' => $this->nullableTrimmedString($settings['welcome_message'] ?? null)
+                ?? ('Здравствуйте! Я '.$assistantName.'. Напишите ваш вопрос.'),
+            'placeholder' => $this->nullableTrimmedString($settings['placeholder'] ?? null)
+                ?? 'Введите сообщение...',
+            'launcher_label' => $this->nullableTrimmedString($settings['launcher_label'] ?? null)
+                ?? 'Чат',
+        ];
+    }
+
+    private function normalizeWidgetColor(mixed $value): ?string
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $normalized = strtoupper(trim($value));
+
+        if (preg_match('/^#[0-9A-F]{6}$/', $normalized) === 1) {
+            return $normalized;
+        }
+
+        return null;
+    }
+
+    private function generateUniqueWidgetKey(): string
+    {
+        for ($attempt = 0; $attempt < 8; $attempt++) {
+            $candidate = 'wdg_'.Str::random(48);
+
+            $exists = AssistantChannel::query()
+                ->where('channel', AssistantChannel::CHANNEL_WIDGET)
+                ->where('credentials->widget_key', $candidate)
+                ->exists();
+
+            if (! $exists) {
+                return $candidate;
+            }
+        }
+
+        return 'wdg_'.Str::uuid()->toString();
     }
 
     private function syncInstagramIntegrationStatus(
