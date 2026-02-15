@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\Company;
 use App\Models\CompanySubscription;
 use App\Models\SubscriptionPlan;
+use App\Models\User;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
 
@@ -12,10 +13,20 @@ class CompanySubscriptionService
 {
     public function provisionDefaultWorkspaceForUser(int $userId, string $userName): Company
     {
-        $company = Company::query()
-            ->where('user_id', $userId)
-            ->orderByDesc('id')
-            ->first();
+        $user = User::query()->find($userId);
+
+        $company = null;
+
+        if ($user && $user->company_id) {
+            $company = Company::query()->find((int) $user->company_id);
+        }
+
+        if (! $company) {
+            $company = Company::query()
+                ->where('user_id', $userId)
+                ->orderByDesc('id')
+                ->first();
+        }
 
         if (! $company) {
             $baseName = trim($userName) !== '' ? trim($userName) : 'Company';
@@ -32,6 +43,12 @@ class CompanySubscriptionService
                 'slug' => Str::limit($slugBase.'-'.$userId, 191, ''),
                 'status' => Company::STATUS_ACTIVE,
             ]);
+        }
+
+        if ($user && $user->company_id !== $company->id) {
+            $user->forceFill([
+                'company_id' => $company->id,
+            ])->save();
         }
 
         $this->ensureCurrentSubscription($company);

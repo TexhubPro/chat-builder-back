@@ -29,8 +29,12 @@ class UserFactory extends Factory
             'phone' => '+1'.fake()->unique()->numerify('##########'),
             'avatar' => fake()->optional()->imageUrl(256, 256, 'people'),
             'role' => 'customer',
+            'company_id' => null,
+            'page_access' => null,
+            'created_by_user_id' => null,
             'status' => true,
             'email_verified_at' => now(),
+            'temporary_password_sent_at' => null,
             'password' => static::$password ??= Hash::make('Password123!'),
             'remember_token' => Str::random(10),
         ];

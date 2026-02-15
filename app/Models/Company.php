@@ -42,6 +42,11 @@ class Company extends Model
         return $this->belongsTo(User::class);
     }
 
+    public function employees(): HasMany
+    {
+        return $this->hasMany(User::class, 'company_id');
+    }
+
     public function assistants(): HasMany
     {
         return $this->hasMany(Assistant::class);

@@ -76,10 +76,11 @@ class EnsureUserIsActive
         Auth::setUser($authenticatedUser);
         $request->setUserResolver(static fn () => $authenticatedUser);
 
-        $company = $authenticatedUser->company;
-        if ($company) {
-            app(CompanySubscriptionService::class)->syncAssistantAccess($company);
-        }
+        $company = app(CompanySubscriptionService::class)->provisionDefaultWorkspaceForUser(
+            $authenticatedUser->id,
+            $authenticatedUser->name
+        );
+        app(CompanySubscriptionService::class)->syncAssistantAccess($company);
 
         $accessToken->forceFill(['last_used_at' => now()])->save();
 

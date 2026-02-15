@@ -8,6 +8,7 @@ use App\Models\Company;
 use App\Models\CompanyCalendarEvent;
 use App\Models\CompanyClient;
 use App\Models\CompanyClientOrder;
+use App\Models\CompanyClientQuestion;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -165,6 +166,8 @@ class AssistantCrmAutomationService
         $contextLines[] = '- If customer asks to cancel an existing request, use cancel_order or cancel_appointment action.';
         $contextLines[] = '- If customer asks to change booking date/time, use reschedule_appointment action.';
         $contextLines[] = '- For update/cancel actions prefer order_id from recent requests list. If not available, latest request in current chat will be used.';
+        $contextLines[] = '- If a customer asks a company-related question you cannot answer from current context/instructions/catalog, create a client question for manager follow-up.';
+        $contextLines[] = '- Do not create client questions for sensitive personal/confidential data or topics unrelated to this company.';
         $contextLines[] = '- When all required data is collected, append exactly one machine block at the very end:';
         $contextLines[] = '  <crm_action>{"action":"create_order","client_name":"...","phone":"...","service_name":"...","address":"...","delivery_datetime":"YYYY-MM-DD HH:MM","amount":0,"note":"..."}</crm_action>';
         $contextLines[] = '- For appointment booking use:';
@@ -175,6 +178,8 @@ class AssistantCrmAutomationService
         $contextLines[] = '  <crm_action>{"action":"cancel_appointment","order_id":123,"reason":"..."}</crm_action>';
         $contextLines[] = '- For rescheduling existing appointment use:';
         $contextLines[] = '  <crm_action>{"action":"reschedule_appointment","order_id":123,"appointment_date":"YYYY-MM-DD","appointment_time":"HH:MM","appointment_duration_minutes":60,"note":"..."}</crm_action>';
+        $contextLines[] = '- For unanswered company-related question use:';
+        $contextLines[] = '  <crm_action>{"action":"create_question","description":"...","company_related":true,"covered_in_instructions":false,"contains_sensitive_data":false}</crm_action>';
         $contextLines[] = '- Do not include any extra JSON outside crm_action tags.';
 
         $basePrompt = trim($prompt);
@@ -291,8 +296,91 @@ class AssistantCrmAutomationService
                 $assistant,
                 $payload
             ),
+            'create_question' => $this->createQuestionFromPayload(
+                $company,
+                $chat,
+                $assistant,
+                $payload
+            ),
             default => null,
         };
+    }
+
+    private function createQuestionFromPayload(
+        Company $company,
+        Chat $chat,
+        Assistant $assistant,
+        array $payload
+    ): ?string {
+        if ($this->boolFromPayload($payload['company_related'] ?? true) !== true) {
+            return null;
+        }
+
+        if ($this->boolFromPayload($payload['contains_sensitive_data'] ?? false) === true) {
+            return null;
+        }
+
+        if ($this->boolFromPayload($payload['covered_in_instructions'] ?? false) === true) {
+            return null;
+        }
+
+        $description = trim((string) ($payload['description'] ?? $payload['question'] ?? $payload['note'] ?? ''));
+        if ($description === '') {
+            return null;
+        }
+
+        $description = Str::limit(
+            preg_replace('/\s+/u', ' ', strip_tags($description)) ?: $description,
+            2000,
+            ''
+        );
+
+        if ($description === '') {
+            return null;
+        }
+
+        if ($this->questionLooksCoveredByAssistantInstructions($assistant, $description)) {
+            return null;
+        }
+
+        if ($this->hasActiveQuestionForChat($company, $chat->id)) {
+            return null;
+        }
+
+        $linkedClient = $this->resolveLinkedClient($company, $chat);
+        $phone = $this->fallbackPhoneForChat($chat, $linkedClient) ?? ('chat-'.$chat->id);
+        $clientName = $this->fallbackClientNameForChat($chat, $linkedClient, $phone);
+        $address = $this->resolveAddressFromPayloadOrContext($payload, $chat, $linkedClient);
+
+        $client = $linkedClient ?? $this->resolveOrCreateClient(
+            $company,
+            $chat,
+            $clientName,
+            $phone,
+            $address,
+        );
+
+        if (! $client) {
+            return null;
+        }
+
+        CompanyClientQuestion::query()->create([
+            'user_id' => $company->user_id,
+            'company_id' => $company->id,
+            'company_client_id' => $client->id,
+            'assistant_id' => $assistant->id,
+            'description' => $description,
+            'status' => CompanyClientQuestion::STATUS_OPEN,
+            'board_column' => 'new',
+            'metadata' => [
+                'source' => 'assistant_crm_action',
+                'chat_id' => $chat->id,
+                'source_channel' => $chat->channel,
+                'assistant_action' => $payload,
+            ],
+        ]);
+
+        return null;
     }
 
     private function createOrderFromPayload(
@@ -1259,6 +1347,115 @@ class AssistantCrmAutomationService
         }
 
         return false;
+    }
+
+    private function hasActiveQuestionForChat(Company $company, int $chatId): bool
+    {
+        if ($chatId <= 0) {
+            return false;
+        }
+
+        return CompanyClientQuestion::query()
+            ->where('company_id', $company->id)
+            ->whereIn('board_column', ['new', 'in_progress'])
+            ->where(function ($builder) use ($chatId): void {
+                $builder
+                    ->where('metadata->chat_id', $chatId)
+                    ->orWhere('metadata->source_chat_id', $chatId)
+                    ->orWhere('metadata->chat->id', $chatId)
+                    ->orWhere('metadata->source->chat_id', $chatId);
+            })
+            ->exists();
+    }
+
+    private function questionLooksCoveredByAssistantInstructions(Assistant $assistant, string $description): bool
+    {
+        $descriptionTokens = $this->tokenizeForInstructionCoverage($description);
+        if ($descriptionTokens === []) {
+            return false;
+        }
+
+        $instructionSources = array_filter([
+            trim((string) config('openai.assistant.base_instructions', '')),
+            trim((string) config('openai.assistant.base_limits', '')),
+            trim((string) ($assistant->instructions ?? '')),
+            trim((string) ($assistant->restrictions ?? '')),
+        ], static fn (string $value): bool => $value !== '');
+
+        if ($instructionSources === []) {
+            return false;
+        }
+
+        $instructionCorpus = mb_strtolower(implode(' ', $instructionSources));
+        $matched = 0;
+
+        foreach ($descriptionTokens as $token) {
+            if (mb_strlen($token) < 4) {
+                continue;
+            }
+
+            if (str_contains($instructionCorpus, $token)) {
+                $matched++;
+            }
+        }
+
+        return $matched >= 3;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function tokenizeForInstructionCoverage(string $value): array
+    {
+        $normalized = mb_strtolower(trim($value));
+        if ($normalized === '') {
+            return [];
+        }
+
+        $parts = preg_split('/[^\p{L}\p{N}]+/u', $normalized);
+        if (! is_array($parts)) {
+            return [];
+        }
+
+        $tokens = [];
+
+        foreach ($parts as $part) {
+            $token = trim($part);
+
+            if ($token === '') {
+                continue;
+            }
+
+            $tokens[] = $token;
+        }
+
+        return array_values(array_unique($tokens));
+    }
+
+    private function boolFromPayload(mixed $value): ?bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        if (is_numeric($value)) {
+            return (int) $value === 1;
+        }
+
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $normalized = Str::lower(trim($value));
+        if (in_array($normalized, ['1', 'true', 'yes', 'on'], true)) {
+            return true;
+        }
+
+        if (in_array($normalized, ['0', 'false', 'no', 'off'], true)) {
+            return false;
+        }
+
+        return null;
     }
 
     private function recentRequestsForChatLines(Company $company, Chat $chat, string $timezone, int $limit): array

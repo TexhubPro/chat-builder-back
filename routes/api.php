@@ -10,6 +10,9 @@ use App\Http\Controllers\Api\ChatMessageController;
 use App\Http\Controllers\Api\CompanyController;
 use App\Http\Controllers\Api\CompanyClientController;
 use App\Http\Controllers\Api\CompanyClientOrderController;
+use App\Http\Controllers\Api\CompanyClientQuestionController;
+use App\Http\Controllers\Api\CompanyEmployeeController;
+use App\Http\Controllers\Api\CompanyCalendarEventController;
 use App\Http\Controllers\Api\CompanySubscriptionController;
 use App\Http\Controllers\Api\InstagramIntegrationController;
 use App\Http\Controllers\Api\InvoiceController;
@@ -39,7 +42,7 @@ Route::prefix('auth')->group(function (): void {
 });
 
 Route::prefix('billing')
-    ->middleware([EnsureUserIsActive::class])
+    ->middleware([EnsureUserIsActive::class, 'page.access:billing'])
     ->group(function (): void {
         Route::get('/plans', [SubscriptionPlanController::class, 'index']);
         Route::get('/subscription', [CompanySubscriptionController::class, 'show']);
@@ -52,22 +55,54 @@ Route::prefix('company')
     ->middleware([EnsureUserIsActive::class])
     ->group(function (): void {
         Route::get('/settings', [CompanyController::class, 'show']);
-        Route::put('/settings', [CompanyController::class, 'update']);
+        Route::put('/settings', [CompanyController::class, 'update'])
+            ->middleware('page.access:business-settings');
+        Route::get('/employees', [CompanyEmployeeController::class, 'index'])
+            ->middleware('page.access:employees');
+        Route::post('/employees', [CompanyEmployeeController::class, 'store'])
+            ->middleware('page.access:employees');
+        Route::put('/employees/{employeeId}', [CompanyEmployeeController::class, 'update'])
+            ->whereNumber('employeeId')
+            ->middleware('page.access:employees');
+        Route::delete('/employees/{employeeId}', [CompanyEmployeeController::class, 'destroy'])
+            ->whereNumber('employeeId')
+            ->middleware('page.access:employees');
     });
 
 Route::prefix('client-requests')
-    ->middleware([EnsureUserIsActive::class])
+    ->middleware([EnsureUserIsActive::class, 'page.access:client-requests'])
     ->group(function (): void {
         Route::get('/', [CompanyClientOrderController::class, 'index']);
         Route::patch('/{orderId}', [CompanyClientOrderController::class, 'update'])->whereNumber('orderId');
         Route::delete('/{orderId}', [CompanyClientOrderController::class, 'destroy'])->whereNumber('orderId');
     });
 
+Route::prefix('client-questions')
+    ->middleware([EnsureUserIsActive::class, 'page.access:client-questions'])
+    ->group(function (): void {
+        Route::get('/', [CompanyClientQuestionController::class, 'index']);
+        Route::patch('/{questionId}', [CompanyClientQuestionController::class, 'update'])
+            ->whereNumber('questionId');
+        Route::delete('/{questionId}', [CompanyClientQuestionController::class, 'destroy'])
+            ->whereNumber('questionId');
+    });
+
 Route::prefix('client-base')
-    ->middleware([EnsureUserIsActive::class])
+    ->middleware([EnsureUserIsActive::class, 'page.access:client-base'])
     ->group(function (): void {
         Route::get('/', [CompanyClientController::class, 'index']);
         Route::get('/{clientId}', [CompanyClientController::class, 'show'])->whereNumber('clientId');
+    });
+
+Route::prefix('calendar')
+    ->middleware([EnsureUserIsActive::class, 'page.access:calendar'])
+    ->group(function (): void {
+        Route::get('/events', [CompanyCalendarEventController::class, 'index']);
+        Route::post('/events', [CompanyCalendarEventController::class, 'store']);
+        Route::put('/events/{eventId}', [CompanyCalendarEventController::class, 'update'])
+            ->whereNumber('eventId');
+        Route::delete('/events/{eventId}', [CompanyCalendarEventController::class, 'destroy'])
+            ->whereNumber('eventId');
     });
 
 Route::post('/billing/alif/callback', [InvoiceController::class, 'alifCallback'])
@@ -84,7 +119,10 @@ Route::post('/chats/webhook/{channel}', [ChatController::class, 'webhook'])
     ->name('api.chats.webhook');
 
 Route::prefix('assistants')
-    ->middleware([EnsureUserIsActive::class])
+    ->middleware([
+        EnsureUserIsActive::class,
+        'page.access:assistant-training,products-services,integrations,client-chats',
+    ])
     ->group(function (): void {
         Route::get('/', [AssistantController::class, 'index']);
         Route::post('/', [AssistantController::class, 'store']);
@@ -100,7 +138,7 @@ Route::prefix('assistants')
     });
 
 Route::prefix('assistant-channels')
-    ->middleware([EnsureUserIsActive::class])
+    ->middleware([EnsureUserIsActive::class, 'page.access:integrations'])
     ->group(function (): void {
         Route::get('/', [AssistantChannelController::class, 'index']);
         Route::post('/{assistantId}/instagram/connect', [InstagramIntegrationController::class, 'redirect'])
@@ -114,7 +152,7 @@ Route::prefix('assistant-channels')
     });
 
 Route::prefix('assistant-services')
-    ->middleware([EnsureUserIsActive::class])
+    ->middleware([EnsureUserIsActive::class, 'page.access:products-services'])
     ->group(function (): void {
         Route::get('/', [AssistantServiceController::class, 'index']);
         Route::post('/', [AssistantServiceController::class, 'store']);
@@ -123,7 +161,7 @@ Route::prefix('assistant-services')
     });
 
 Route::prefix('assistant-products')
-    ->middleware([EnsureUserIsActive::class])
+    ->middleware([EnsureUserIsActive::class, 'page.access:products-services'])
     ->group(function (): void {
         Route::get('/', [AssistantProductController::class, 'index']);
         Route::post('/', [AssistantProductController::class, 'store']);
@@ -132,7 +170,7 @@ Route::prefix('assistant-products')
     });
 
 Route::prefix('chats')
-    ->middleware([EnsureUserIsActive::class])
+    ->middleware([EnsureUserIsActive::class, 'page.access:client-chats'])
     ->group(function (): void {
         Route::get('/', [ChatController::class, 'index']);
         Route::get('/{chatId}', [ChatController::class, 'show'])->whereNumber('chatId');

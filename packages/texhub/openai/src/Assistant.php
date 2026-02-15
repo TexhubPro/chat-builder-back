@@ -526,31 +526,47 @@ class Assistant
         int $maxAttempts = 30,
         int $sleepMs = 1000
     ): ?string {
-        $runId = $this->createRun($threadId, $assistantId, $runPayload);
+        $maxServerErrorRetries = 2;
 
-        if ($runId === null) {
-            return null;
-        }
+        for ($attempt = 0; $attempt <= $maxServerErrorRetries; $attempt++) {
+            $runId = $this->createRun($threadId, $assistantId, $runPayload);
 
-        $run = $this->waitForRun($threadId, $runId, $maxAttempts, $sleepMs);
+            if ($runId === null) {
+                return null;
+            }
 
-        if ($run === null) {
-            return null;
-        }
+            $run = $this->waitForRun($threadId, $runId, $maxAttempts, $sleepMs);
 
-        if (($run['status'] ?? null) !== 'completed') {
+            if ($run === null) {
+                return null;
+            }
+
+            if (($run['status'] ?? null) === 'completed') {
+                return $this->getLatestAssistantMessageText($threadId);
+            }
+
+            $status = (string) ($run['status'] ?? '');
+            $lastError = $run['last_error'] ?? null;
+            $lastErrorCode = is_array($lastError) ? (string) ($lastError['code'] ?? '') : '';
+
             $this->logError('OpenAI run did not complete', [
                 'thread_id' => $threadId,
                 'run_id' => $runId,
                 'status' => $run['status'] ?? null,
                 'last_error' => $run['last_error'] ?? null,
                 'required_action' => $run['required_action'] ?? null,
+                'attempt' => $attempt + 1,
+                'max_attempts_on_server_error' => $maxServerErrorRetries + 1,
             ]);
 
-            return null;
+            if ($status !== 'failed' || $lastErrorCode !== 'server_error' || $attempt >= $maxServerErrorRetries) {
+                return null;
+            }
+
+            usleep(($attempt + 1) * 400000);
         }
 
-        return $this->getLatestAssistantMessageText($threadId);
+        return null;
     }
 
     /**

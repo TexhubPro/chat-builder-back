@@ -4,6 +4,7 @@ namespace App\Models;
 
 // use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
@@ -17,6 +18,7 @@ class User extends Authenticatable
 
     public const ROLE_CUSTOMER = 'customer';
     public const ROLE_ADMIN = 'admin';
+    public const ROLE_EMPLOYEE = 'employee';
 
     /**
      * The attributes that are mass assignable.
@@ -29,8 +31,12 @@ class User extends Authenticatable
         'phone',
         'avatar',
         'role',
+        'company_id',
+        'page_access',
+        'created_by_user_id',
         'status',
         'openai_assistant_updated_at',
+        'temporary_password_sent_at',
         'password',
     ];
 
@@ -54,7 +60,9 @@ class User extends Authenticatable
         return [
             'email_verified_at' => 'datetime',
             'status' => 'boolean',
+            'page_access' => 'array',
             'openai_assistant_updated_at' => 'datetime',
+            'temporary_password_sent_at' => 'datetime',
             'password' => 'hashed',
         ];
     }
@@ -77,6 +85,21 @@ class User extends Authenticatable
     public function company(): HasOne
     {
         return $this->hasOne(Company::class);
+    }
+
+    public function workspaceCompany(): BelongsTo
+    {
+        return $this->belongsTo(Company::class, 'company_id');
+    }
+
+    public function creator(): BelongsTo
+    {
+        return $this->belongsTo(self::class, 'created_by_user_id');
+    }
+
+    public function employees(): HasMany
+    {
+        return $this->hasMany(self::class, 'created_by_user_id');
     }
 
     public function assistantChannels(): HasMany

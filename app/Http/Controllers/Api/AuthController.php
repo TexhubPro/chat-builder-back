@@ -991,11 +991,10 @@ class AuthController extends Controller
 
     private function syncCompanyAssistantAccess(User $user): void
     {
-        $company = $user->company;
-
-        if (!$company) {
-            return;
-        }
+        $company = $this->subscriptionService()->provisionDefaultWorkspaceForUser(
+            $user->id,
+            $user->name
+        );
 
         $this->subscriptionService()->syncAssistantAccess($company);
     }

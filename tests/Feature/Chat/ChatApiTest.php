@@ -1007,6 +1007,148 @@ test('chat api assistant reply can auto-create client request from crm action bl
     expect((int) data_get($order?->metadata, 'chat_id'))->toBe($chat->id);
 });
 
+test('chat api assistant reply can auto-create client question from crm action block', function () {
+    [$user, $company, $token] = chatApiContext();
+
+    config()->set('openai.assistant.api_key', 'test-openai-key');
+    config()->set('openai.assistant.base_instructions', 'Always help with company services.');
+
+    $assistant = Assistant::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'name' => 'Question Assistant',
+        'openai_assistant_id' => 'asst_crm_question_1',
+        'is_active' => true,
+    ]);
+
+    $client = CompanyClient::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'name' => 'Question Client',
+        'phone' => '+992900444555',
+    ]);
+
+    $chat = Chat::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'assistant_id' => $assistant->id,
+        'channel' => 'assistant',
+        'channel_chat_id' => 'assistant-crm-question-1',
+        'channel_user_id' => 'assistant-crm-question-customer-1',
+        'name' => 'Question Customer',
+        'metadata' => [
+            'company_client_id' => $client->id,
+        ],
+    ]);
+
+    $this->mock(OpenAiAssistantClient::class, function (MockInterface $mock): void {
+        $mock->shouldReceive('createThread')->once()->andReturn('thread_crm_question_1');
+        $mock->shouldReceive('sendTextMessage')->once()->andReturn('message_crm_question_1');
+        $mock->shouldReceive('runThreadAndGetResponse')
+            ->once()
+            ->andReturn(
+                'Не нашел точный ответ. <crm_action>{"action":"create_question","description":"Клиент спрашивает о нестандартной гарантии на услугу.","company_related":true,"covered_in_instructions":false,"contains_sensitive_data":false}</crm_action>'
+            );
+    });
+
+    $this
+        ->withHeader('Authorization', "Bearer {$token}")
+        ->postJson('/api/chats/'.$chat->id.'/assistant-reply', [
+            'assistant_id' => $assistant->id,
+            'prompt' => 'Какая нестандартная гарантия у вас есть?',
+        ])
+        ->assertCreated()
+        ->assertJsonPath('assistant_message.text', 'Не нашел точный ответ.');
+
+    $question = CompanyClientQuestion::query()
+        ->where('company_id', $company->id)
+        ->where('company_client_id', $client->id)
+        ->latest('id')
+        ->first();
+
+    expect($question)->not->toBeNull();
+    expect((string) $question?->board_column)->toBe('new');
+    expect((string) $question?->status)->toBe(CompanyClientQuestion::STATUS_OPEN);
+    expect((int) data_get($question?->metadata, 'chat_id'))->toBe($chat->id);
+});
+
+test('chat api assistant reply does not create duplicate active question for same chat', function () {
+    [$user, $company, $token] = chatApiContext();
+
+    config()->set('openai.assistant.api_key', 'test-openai-key');
+
+    $assistant = Assistant::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'name' => 'Question Assistant 2',
+        'openai_assistant_id' => 'asst_crm_question_2',
+        'is_active' => true,
+    ]);
+
+    $client = CompanyClient::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'name' => 'Question Client 2',
+        'phone' => '+992900444556',
+    ]);
+
+    $chat = Chat::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'assistant_id' => $assistant->id,
+        'channel' => 'assistant',
+        'channel_chat_id' => 'assistant-crm-question-2',
+        'channel_user_id' => 'assistant-crm-question-customer-2',
+        'name' => 'Question Customer 2',
+        'metadata' => [
+            'company_client_id' => $client->id,
+        ],
+    ]);
+
+    CompanyClientQuestion::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'company_client_id' => $client->id,
+        'assistant_id' => $assistant->id,
+        'description' => 'Already active card',
+        'status' => CompanyClientQuestion::STATUS_OPEN,
+        'board_column' => 'new',
+        'metadata' => [
+            'chat_id' => $chat->id,
+        ],
+    ]);
+
+    $this->mock(OpenAiAssistantClient::class, function (MockInterface $mock): void {
+        $mock->shouldReceive('createThread')->once()->andReturn('thread_crm_question_2');
+        $mock->shouldReceive('sendTextMessage')->once()->andReturn('message_crm_question_2');
+        $mock->shouldReceive('runThreadAndGetResponse')
+            ->once()
+            ->andReturn(
+                'Передам менеджеру. <crm_action>{"action":"create_question","description":"Еще один неясный вопрос клиента.","company_related":true,"covered_in_instructions":false,"contains_sensitive_data":false}</crm_action>'
+            );
+    });
+
+    $this
+        ->withHeader('Authorization', "Bearer {$token}")
+        ->postJson('/api/chats/'.$chat->id.'/assistant-reply', [
+            'assistant_id' => $assistant->id,
+            'prompt' => 'Есть еще уточнение',
+        ])
+        ->assertCreated()
+        ->assertJsonPath('assistant_message.text', 'Передам менеджеру.');
+
+    expect(
+        CompanyClientQuestion::query()
+            ->where('company_id', $company->id)
+            ->where(function ($query) use ($chat): void {
+                $query
+                    ->where('metadata->chat_id', $chat->id)
+                    ->orWhere('metadata->source_chat_id', $chat->id);
+            })
+            ->count()
+    )->toBe(1);
+});
+
 test('chat api assistant reply uses catalog price and delivery settings for crm action order', function () {
     [$user, $company, $token] = chatApiContext();
 
