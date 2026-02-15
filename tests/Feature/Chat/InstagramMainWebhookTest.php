@@ -9,6 +9,7 @@ use App\Models\CompanySubscription;
 use App\Models\SubscriptionPlan;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Http;
 use Mockery\MockInterface;
 use TexHub\Meta\Facades\Instagram as InstagramFacade;
 use TexHub\Meta\Models\InstagramIntegration;
@@ -18,6 +19,8 @@ uses(RefreshDatabase::class);
 
 function instagramWebhookContext(string $subscriptionStatus = CompanySubscription::STATUS_ACTIVE): array
 {
+    config()->set('meta.instagram.resolve_customer_profile', false);
+
     $user = User::factory()->create([
         'status' => true,
         'email_verified_at' => now(),
@@ -449,6 +452,49 @@ test('instagram main webhook syncs receiver id and sends outbound via webhook re
 
     $credentials = is_array($assistantChannel->credentials) ? $assistantChannel->credentials : [];
     expect((string) ($credentials['receiver_id'] ?? ''))->toBe('178900000001');
+});
+
+test('instagram main webhook resolves customer profile for new chat and stores real name and avatar', function () {
+    [, $company] = instagramWebhookContext();
+
+    config()->set('meta.instagram.auto_reply_enabled', false);
+    config()->set('meta.instagram.resolve_customer_profile', true);
+    config()->set('meta.instagram.graph_base', 'https://graph.instagram.com');
+    config()->set('meta.instagram.api_version', 'v23.0');
+
+    Http::fake([
+        'https://graph.facebook.com/v23.0/customer-1001*' => Http::response([
+            'name' => 'Mahmud Iskhod',
+            'profile_pic' => 'https://cdn.example.com/avatars/mahmud.jpg',
+        ], 200),
+    ]);
+
+    InstagramFacade::shouldReceive('sendTextMessage')->never();
+    InstagramFacade::shouldReceive('sendMediaMessage')->never();
+
+    $response = $this->postJson('/instagram-main-webhook', instagramMainWebhookPayload([
+        'mid' => 'in_mid_profile_1',
+        'text' => 'Привет',
+    ]));
+
+    $response->assertOk()->assertJsonPath('ok', true);
+
+    $chat = Chat::query()
+        ->where('company_id', $company->id)
+        ->where('channel', 'instagram')
+        ->firstOrFail();
+
+    expect((string) $chat->name)->toBe('Mahmud Iskhod');
+    expect((string) $chat->avatar)->toBe('https://cdn.example.com/avatars/mahmud.jpg');
+    expect((string) data_get($chat->metadata, 'instagram.customer_profile.name'))->toBe('Mahmud Iskhod');
+    expect((string) data_get($chat->metadata, 'instagram.customer_profile.avatar'))
+        ->toBe('https://cdn.example.com/avatars/mahmud.jpg');
+
+    Http::assertSent(function ($request): bool {
+        return $request->method() === 'GET'
+            && str_starts_with($request->url(), 'https://graph.facebook.com/v23.0/customer-1001')
+            && (string) ($request['fields'] ?? '') === 'name,username,profile_pic,profile_picture_url';
+    });
 });
 
 test('instagram main webhook appends repeated mid messages into same chat', function () {

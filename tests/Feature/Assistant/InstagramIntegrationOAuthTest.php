@@ -229,6 +229,119 @@ test('instagram oauth callback stores integration and links assistant channel', 
     });
 });
 
+test('instagram oauth callback stores different receiver id when webhook subscription resolves business recipient id', function () {
+    [$user, , $assistant, $token] = instagramOauthTestContext();
+
+    config()->set('meta.instagram.app_id', 'test-app-id');
+    config()->set('meta.instagram.app_secret', 'test-app-secret');
+    config()->set('meta.instagram.redirect_uri', 'http://localhost:8000/api/integrations/instagram/callback');
+    config()->set('meta.instagram.frontend_redirect_url', 'http://localhost:5173/integrations');
+    config()->set('meta.instagram.graph_base', 'https://graph.instagram.com');
+    config()->set('meta.instagram.api_version', 'v23.0');
+    config()->set('meta.instagram.avatar_disk', 'public');
+    config()->set('meta.instagram.avatar_dir', 'instagram/avatars');
+    config()->set('meta.instagram.subscribe_after_connect', true);
+    config()->set('meta.instagram.subscribed_fields', 'messages');
+
+    Storage::fake('public');
+
+    Http::fake(function ($request) {
+        $url = $request->url();
+
+        if ($url === 'https://api.instagram.com/oauth/access_token') {
+            return Http::response([
+                'access_token' => 'short_token_456',
+                'user_id' => '24498714506445566',
+                'expires_in' => 3600,
+            ], 200);
+        }
+
+        if (str_starts_with($url, 'https://graph.instagram.com/access_token')) {
+            return Http::response([
+                'access_token' => 'long_token_456',
+                'expires_in' => 5184000,
+            ], 200);
+        }
+
+        if (str_starts_with($url, 'https://graph.instagram.com/me')) {
+            return Http::response([
+                'id' => '17841444241066914',
+                'user_id' => '24498714506445566',
+                'username' => 'graphic.jungle',
+                'profile_picture_url' => 'https://cdn.example.com/avatar-2.jpg',
+            ], 200);
+        }
+
+        if (str_starts_with($url, 'https://graph.instagram.com/v23.0/17841444241066914/subscribed_apps')) {
+            return Http::response([
+                'success' => true,
+            ], 200);
+        }
+
+        if (str_starts_with($url, 'https://graph.instagram.com/v23.0/24498714506445566/subscribed_apps')) {
+            return Http::response([
+                'error' => [
+                    'message' => 'Unsupported get request',
+                    'type' => 'OAuthException',
+                    'code' => 100,
+                ],
+            ], 400);
+        }
+
+        if ($url === 'https://cdn.example.com/avatar-2.jpg') {
+            return Http::response('fake-image-2', 200, ['Content-Type' => 'image/jpeg']);
+        }
+
+        return Http::response([], 404);
+    });
+
+    $startPayload = $this
+        ->withHeader('Authorization', "Bearer {$token}")
+        ->withHeader('User-Agent', 'Pest Browser Agent')
+        ->postJson('/api/assistant-channels/'.$assistant->id.'/instagram/connect')
+        ->assertOk()
+        ->json();
+
+    $authorizationUrl = (string) ($startPayload['authorization_url'] ?? '');
+    parse_str((string) parse_url($authorizationUrl, PHP_URL_QUERY), $query);
+    $state = (string) ($query['state'] ?? '');
+
+    $response = $this
+        ->withHeader('User-Agent', 'Pest Browser Agent')
+        ->get('/api/integrations/instagram/callback?code=test_code_2&state='.urlencode($state));
+
+    $response->assertRedirect();
+
+    $location = (string) $response->headers->get('Location');
+    expect($location)->toContain('instagram_status=connected');
+    expect($location)->toContain('assistant_id='.$assistant->id);
+
+    $assistantChannel = AssistantChannel::query()
+        ->where('assistant_id', $assistant->id)
+        ->where('channel', 'instagram')
+        ->first();
+
+    expect($assistantChannel)->not->toBeNull();
+    expect($assistantChannel?->external_account_id)->toBe('17841444241066914');
+
+    $integration = InstagramIntegration::query()
+        ->where('user_id', $user->id)
+        ->where('instagram_user_id', '24498714506445566')
+        ->first();
+
+    expect($integration)->not->toBeNull();
+    expect((string) $integration?->receiver_id)->toBe('17841444241066914');
+
+    Http::assertSent(function ($request): bool {
+        parse_str((string) parse_url($request->url(), PHP_URL_QUERY), $query);
+
+        return $request->method() === 'POST'
+            && str_starts_with($request->url(), 'https://graph.instagram.com/v23.0/17841444241066914/subscribed_apps')
+            && (string) ($query['subscribed_fields'] ?? '') === 'messages'
+            && (string) ($query['access_token'] ?? '') === 'long_token_456';
+    });
+});
+
 test('instagram oauth callback rejects invalid state and redirects with error', function () {
     config()->set('meta.instagram.frontend_redirect_url', 'http://localhost:5173/integrations');
 

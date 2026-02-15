@@ -369,8 +369,34 @@ class InstagramMainWebhookService
             'channel' => 'instagram',
             'channel_chat_id' => $channelChatId,
         ]);
+        $isNewChat = ! $chat->exists;
 
         $existingMetadata = is_array($chat->metadata) ? $chat->metadata : [];
+        $displayName = $this->extractChatDisplayName($event);
+        $avatarUrl = is_string($chat->avatar) ? trim((string) $chat->avatar) : '';
+        $profileSnapshot = null;
+
+        if ($isNewChat && $this->shouldResolveCustomerProfile()) {
+            $profile = $this->fetchInstagramCustomerProfile($integration, $senderId);
+
+            if ($displayName === null) {
+                $displayName = $profile['name'] ?? null;
+            }
+
+            $candidateAvatar = $profile['avatar'] ?? null;
+            if (is_string($candidateAvatar) && trim($candidateAvatar) !== '') {
+                $avatarUrl = trim($candidateAvatar);
+            }
+
+            if (($profile['name'] ?? null) !== null || ($profile['avatar'] ?? null) !== null) {
+                $profileSnapshot = array_filter([
+                    'name' => $profile['name'] ?? null,
+                    'avatar' => $profile['avatar'] ?? null,
+                    'resolved_at' => now()->toIso8601String(),
+                ], static fn (mixed $value): bool => $value !== null && $value !== '');
+            }
+        }
+
         $incomingMetadata = [
             'source' => 'meta_instagram_main_webhook',
             'instagram' => [
@@ -380,13 +406,17 @@ class InstagramMainWebhookService
             ],
         ];
 
+        if (is_array($profileSnapshot) && $profileSnapshot !== []) {
+            $incomingMetadata['instagram']['customer_profile'] = $profileSnapshot;
+        }
+
         $chat->fill([
             'user_id' => $company->user_id,
             'assistant_id' => $assistant?->id ?? $chat->assistant_id,
             'assistant_channel_id' => $assistantChannel?->id ?? $chat->assistant_channel_id,
             'channel_user_id' => $senderId,
-            'name' => $this->extractChatDisplayName($event) ?? $chat->name ?? ('Instagram '.$senderId),
-            'avatar' => $chat->avatar,
+            'name' => $displayName ?? $chat->name ?? ('Instagram '.$senderId),
+            'avatar' => $avatarUrl !== '' ? Str::limit($avatarUrl, 2048, '') : null,
             'status' => $chat->status ?: Chat::STATUS_OPEN,
             'metadata' => array_replace_recursive($existingMetadata, $incomingMetadata),
         ]);
@@ -409,6 +439,62 @@ class InstagramMainWebhookService
         }
 
         return null;
+    }
+
+    private function shouldResolveCustomerProfile(): bool
+    {
+        return (bool) config('meta.instagram.resolve_customer_profile', true);
+    }
+
+    private function fetchInstagramCustomerProfile(InstagramIntegration $integration, string $senderId): array
+    {
+        $normalizedSenderId = trim($senderId);
+        $accessToken = trim((string) ($integration->access_token ?? ''));
+
+        if ($normalizedSenderId === '' || $accessToken === '') {
+            return [];
+        }
+
+        $apiVersion = trim((string) config('meta.instagram.api_version', 'v23.0'));
+        if ($apiVersion === '') {
+            $apiVersion = 'v23.0';
+        }
+
+        $configuredGraphBase = rtrim((string) config('meta.instagram.graph_base', 'https://graph.instagram.com'), '/');
+        $graphBases = array_values(array_unique(array_filter([
+            'https://graph.facebook.com',
+            $configuredGraphBase,
+        ], static fn (string $value): bool => trim($value) !== '')));
+
+        foreach ($graphBases as $base) {
+            try {
+                $response = Http::timeout(8)->get($base.'/'.$apiVersion.'/'.$normalizedSenderId, [
+                    'fields' => 'name,username,profile_pic,profile_picture_url',
+                    'access_token' => $accessToken,
+                ]);
+            } catch (Throwable) {
+                continue;
+            }
+
+            if (! $response->successful()) {
+                continue;
+            }
+
+            $payload = $response->json();
+            if (! is_array($payload)) {
+                continue;
+            }
+
+            $name = trim((string) ($payload['name'] ?? $payload['username'] ?? ''));
+            $avatar = trim((string) ($payload['profile_pic'] ?? $payload['profile_picture_url'] ?? ''));
+
+            return array_filter([
+                'name' => $name !== '' ? Str::limit($name, 160, '') : null,
+                'avatar' => $avatar !== '' ? Str::limit($avatar, 2048, '') : null,
+            ], static fn (mixed $value): bool => $value !== null && $value !== '');
+        }
+
+        return [];
     }
 
     private function normalizeInboundParts(array $event): array

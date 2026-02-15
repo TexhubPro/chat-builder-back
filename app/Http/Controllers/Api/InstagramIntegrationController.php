@@ -142,15 +142,22 @@ class InstagramIntegrationController extends Controller
             }
 
             $profile = $this->fetchProfile($accessToken);
-            $receiverId = trim((string) ($profile['id'] ?? ''));
+            $profileId = trim((string) ($profile['id'] ?? ''));
+            $profileUserId = trim((string) ($profile['user_id'] ?? ''));
             $username = $this->nullableTrimmedString($profile['username'] ?? null);
             $profilePictureUrl = $this->nullableTrimmedString($profile['profile_picture_url'] ?? null);
 
+            $receiverIdCandidates = array_values(array_unique(array_filter([
+                $profileId,
+                $profileUserId,
+                $instagramUserId,
+            ], static fn (string $value): bool => $value !== '')));
+
             if ($instagramUserId === '') {
-                $instagramUserId = $receiverId;
+                $instagramUserId = $receiverIdCandidates[0] ?? '';
             }
 
-            if ($instagramUserId === '' && $receiverId === '') {
+            if ($instagramUserId === '' && $receiverIdCandidates === []) {
                 return redirect()->away($this->appendQuery($frontendRedirectUrl, [
                     'instagram_status' => 'error',
                     'assistant_id' => $assistantId > 0 ? $assistantId : null,
@@ -194,22 +201,23 @@ class InstagramIntegrationController extends Controller
                 ]));
             }
 
-            $integrationKey = $instagramUserId !== '' ? $instagramUserId : $receiverId;
+            $integrationKey = $instagramUserId !== ''
+                ? $instagramUserId
+                : ($receiverIdCandidates[0] ?? '');
             $existingIntegration = InstagramIntegration::query()
                 ->where('user_id', $user->id)
                 ->where('instagram_user_id', $integrationKey)
                 ->first();
 
             $subscribedFields = $this->instagramSubscribedFields();
-            $subscriptionPayload = null;
-
-            if ($this->shouldSubscribeInstagramWebhooks()) {
-                $subscriptionPayload = $this->subscribeInstagramAccountToWebhook(
-                    $accessToken,
-                    $receiverId !== '' ? $receiverId : $integrationKey,
-                    $subscribedFields
-                );
-            }
+            [$receiverId, $subscriptionPayload] = $this->resolveReceiverIdAndSubscriptionPayload(
+                $accessToken,
+                array_values(array_unique(array_filter([
+                    ...$receiverIdCandidates,
+                    $integrationKey,
+                ], static fn (string $value): bool => $value !== ''))),
+                $subscribedFields,
+            );
 
             [$avatarPath, $avatarUrl] = $this->storeAvatarFromProfile(
                 $profilePictureUrl,
@@ -268,6 +276,9 @@ class InstagramIntegrationController extends Controller
             $assistantChannel->metadata = array_replace_recursive($existingMetadata, array_filter([
                 'instagram_integration_id' => (int) $integration->id,
                 'username' => $username,
+                'oauth_user_id' => $instagramUserId,
+                'profile_id' => $profileId,
+                'profile_user_id' => $profileUserId !== '' ? $profileUserId : null,
                 'profile_picture_url' => $profilePictureUrl,
                 'avatar_path' => $avatarPath,
                 'avatar_url' => $avatarUrl,
@@ -556,12 +567,53 @@ class InstagramIntegrationController extends Controller
         return $payload;
     }
 
+    private function resolveReceiverIdAndSubscriptionPayload(
+        string $accessToken,
+        array $receiverIdCandidates,
+        string $subscribedFields,
+    ): array {
+        $normalizedCandidates = array_values(array_unique(array_filter(
+            array_map(static fn (mixed $value): string => trim((string) $value), $receiverIdCandidates),
+            static fn (string $value): bool => $value !== ''
+        )));
+
+        if ($normalizedCandidates === []) {
+            throw new \RuntimeException('Instagram account id was not returned.');
+        }
+
+        if (! $this->shouldSubscribeInstagramWebhooks()) {
+            return [$normalizedCandidates[0], null];
+        }
+
+        $lastException = null;
+
+        foreach ($normalizedCandidates as $candidateId) {
+            try {
+                $payload = $this->subscribeInstagramAccountToWebhook(
+                    $accessToken,
+                    $candidateId,
+                    $subscribedFields,
+                );
+
+                return [$candidateId, $payload];
+            } catch (Throwable $exception) {
+                $lastException = $exception;
+            }
+        }
+
+        if ($lastException !== null) {
+            throw $lastException;
+        }
+
+        return [$normalizedCandidates[0], null];
+    }
+
     private function fetchProfile(string $accessToken): array
     {
         $graphBase = rtrim((string) config('meta.instagram.graph_base', 'https://graph.instagram.com'), '/');
 
         $response = Http::get($graphBase . '/me', [
-            'fields' => 'id,username,profile_picture_url',
+            'fields' => 'id,user_id,username,profile_picture_url',
             'access_token' => $accessToken,
         ]);
 
