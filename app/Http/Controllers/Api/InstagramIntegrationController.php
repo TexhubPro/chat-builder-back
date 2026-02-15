@@ -9,11 +9,13 @@ use App\Models\Company;
 use App\Models\User;
 use App\Services\CompanySubscriptionService;
 use App\Services\InstagramTokenService;
+use Illuminate\Http\Client\Response;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
@@ -281,12 +283,19 @@ class InstagramIntegrationController extends Controller
                 'assistant_id' => $assistant->id,
             ]));
         } catch (Throwable $exception) {
+            Log::error('Instagram integration callback failed.', [
+                'assistant_id' => $assistantId,
+                'state_present' => trim((string) $request->query('state', '')) !== '',
+                'error_class' => $exception::class,
+                'error_message' => $exception->getMessage(),
+            ]);
+
             report($exception);
 
             return redirect()->away($this->appendQuery($frontendRedirectUrl, [
                 'instagram_status' => 'error',
                 'assistant_id' => $assistantId > 0 ? $assistantId : null,
-                'instagram_error' => 'Instagram integration failed. Please try again.',
+                'instagram_error' => $this->publicInstagramErrorMessage($exception),
             ]));
         }
     }
@@ -459,7 +468,12 @@ class InstagramIntegrationController extends Controller
         ]);
 
         if (! $response->successful()) {
-            throw new \RuntimeException('Failed to exchange Instagram authorization code.');
+            throw new \RuntimeException(
+                $this->httpErrorMessage(
+                    'Failed to exchange Instagram authorization code.',
+                    $response
+                )
+            );
         }
 
         $payload = $response->json();
@@ -516,7 +530,12 @@ class InstagramIntegrationController extends Controller
         $response = Http::post($endpoint.'?'.http_build_query($query, '', '&', PHP_QUERY_RFC3986));
 
         if (! $response->successful()) {
-            throw new \RuntimeException('Failed to subscribe Instagram account to webhook events.');
+            throw new \RuntimeException(
+                $this->httpErrorMessage(
+                    'Failed to subscribe Instagram account to webhook events.',
+                    $response
+                )
+            );
         }
 
         $payload = $response->json();
@@ -526,7 +545,12 @@ class InstagramIntegrationController extends Controller
 
         $success = $payload['success'] ?? null;
         if ($success === false) {
-            throw new \RuntimeException('Instagram webhook subscription request was rejected.');
+            $error = $this->extractInstagramApiErrorMessage($payload);
+            throw new \RuntimeException(
+                $error !== null
+                    ? 'Instagram webhook subscription request was rejected: '.$error
+                    : 'Instagram webhook subscription request was rejected.'
+            );
         }
 
         return $payload;
@@ -542,7 +566,9 @@ class InstagramIntegrationController extends Controller
         ]);
 
         if (! $response->successful()) {
-            throw new \RuntimeException('Failed to fetch Instagram profile.');
+            throw new \RuntimeException(
+                $this->httpErrorMessage('Failed to fetch Instagram profile.', $response)
+            );
         }
 
         $payload = $response->json();
@@ -726,5 +752,48 @@ class InstagramIntegrationController extends Controller
     private function instagramTokenService(): InstagramTokenService
     {
         return app(InstagramTokenService::class);
+    }
+
+    private function publicInstagramErrorMessage(Throwable $exception): string
+    {
+        $message = trim($exception->getMessage());
+
+        if ($message === '') {
+            return 'Instagram integration failed. Please try again.';
+        }
+
+        return Str::limit($message, 240);
+    }
+
+    private function httpErrorMessage(string $prefix, Response $response): string
+    {
+        $apiError = $this->extractInstagramApiErrorMessage($response->json());
+
+        if ($apiError !== null) {
+            return $prefix.' '.$apiError;
+        }
+
+        $rawBody = trim($response->body());
+        if ($rawBody !== '') {
+            return $prefix.' '.Str::limit($rawBody, 200);
+        }
+
+        return $prefix.' HTTP '.$response->status().'.';
+    }
+
+    private function extractInstagramApiErrorMessage(mixed $payload): ?string
+    {
+        if (! is_array($payload)) {
+            return null;
+        }
+
+        $errorMessage = $payload['error']['message'] ?? $payload['message'] ?? null;
+        if (! is_string($errorMessage)) {
+            return null;
+        }
+
+        $normalized = trim($errorMessage);
+
+        return $normalized === '' ? null : $normalized;
     }
 }
