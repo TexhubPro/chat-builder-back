@@ -141,17 +141,20 @@ class InstagramIntegrationController extends Controller
                 }
             }
 
-            $profile = $this->fetchProfile($accessToken);
+            $profiles = $this->fetchProfileVariants($accessToken);
+            $profile = $profiles[0];
             $profileId = trim((string) ($profile['id'] ?? ''));
             $profileUserId = trim((string) ($profile['user_id'] ?? ''));
-            $username = $this->nullableTrimmedString($profile['username'] ?? null);
-            $profilePictureUrl = $this->nullableTrimmedString($profile['profile_picture_url'] ?? null);
+            $username = $this->firstNonEmptyString(array_map(
+                fn (array $item): string => trim((string) ($item['username'] ?? '')),
+                $profiles,
+            ));
+            $profilePictureUrl = $this->firstNonEmptyString(array_map(
+                fn (array $item): string => trim((string) ($item['profile_picture_url'] ?? '')),
+                $profiles,
+            ));
 
-            $receiverIdCandidates = array_values(array_unique(array_filter([
-                $profileId,
-                $profileUserId,
-                $instagramUserId,
-            ], static fn (string $value): bool => $value !== '')));
+            $receiverIdCandidates = $this->extractReceiverIdCandidates($profiles, $instagramUserId);
 
             if ($instagramUserId === '') {
                 $instagramUserId = $receiverIdCandidates[0] ?? '';
@@ -612,24 +615,135 @@ class InstagramIntegrationController extends Controller
     {
         $graphBase = rtrim((string) config('meta.instagram.graph_base', 'https://graph.instagram.com'), '/');
 
+        $payload = $this->requestProfileFromGraphBase($graphBase, $accessToken, true);
+        if (! is_array($payload)) {
+            throw new \RuntimeException('Invalid Instagram profile response.');
+        }
+
+        return $payload;
+    }
+
+    private function fetchProfileVariants(string $accessToken): array
+    {
+        $variants = [];
+        $configuredGraphBase = rtrim((string) config('meta.instagram.graph_base', 'https://graph.instagram.com'), '/');
+        $graphBases = array_values(array_unique(array_filter([
+            $configuredGraphBase,
+            'https://graph.facebook.com',
+        ], static fn (string $value): bool => trim($value) !== '')));
+
+        foreach ($graphBases as $index => $graphBase) {
+            $profile = $this->requestProfileFromGraphBase($graphBase, $accessToken, $index === 0);
+
+            if (is_array($profile)) {
+                $variants[] = $profile;
+            }
+        }
+
+        if ($variants === []) {
+            throw new \RuntimeException('Failed to fetch Instagram profile.');
+        }
+
+        return $variants;
+    }
+
+    private function requestProfileFromGraphBase(
+        string $graphBase,
+        string $accessToken,
+        bool $throwOnFailure,
+    ): ?array {
         $response = Http::get($graphBase . '/me', [
             'fields' => 'id,user_id,username,profile_picture_url',
             'access_token' => $accessToken,
         ]);
 
         if (! $response->successful()) {
-            throw new \RuntimeException(
-                $this->httpErrorMessage('Failed to fetch Instagram profile.', $response)
-            );
+            if ($throwOnFailure) {
+                throw new \RuntimeException(
+                    $this->httpErrorMessage('Failed to fetch Instagram profile.', $response)
+                );
+            }
+
+            return null;
         }
 
         $payload = $response->json();
 
         if (! is_array($payload)) {
-            throw new \RuntimeException('Invalid Instagram profile response.');
+            if ($throwOnFailure) {
+                throw new \RuntimeException('Invalid Instagram profile response.');
+            }
+
+            return null;
         }
 
         return $payload;
+    }
+
+    private function extractReceiverIdCandidates(array $profiles, string $oauthUserId): array
+    {
+        $candidates = [];
+
+        foreach ($profiles as $profile) {
+            if (! is_array($profile)) {
+                continue;
+            }
+
+            $profileId = trim((string) ($profile['id'] ?? ''));
+            $profileUserId = trim((string) ($profile['user_id'] ?? ''));
+
+            if ($profileId !== '') {
+                $candidates[] = $profileId;
+            }
+
+            if ($profileUserId !== '') {
+                $candidates[] = $profileUserId;
+            }
+        }
+
+        $normalizedOauthId = trim($oauthUserId);
+        if ($normalizedOauthId !== '') {
+            $candidates[] = $normalizedOauthId;
+        }
+
+        $candidates = array_values(array_unique(array_filter($candidates, static fn (string $value): bool => $value !== '')));
+
+        usort($candidates, static function (string $left, string $right): int {
+            $score = static function (string $value): int {
+                $result = 0;
+
+                if (str_starts_with($value, '178')) {
+                    $result += 100;
+                }
+
+                if (ctype_digit($value)) {
+                    $result += 20;
+                }
+
+                if (strlen($value) >= 12) {
+                    $result += 10;
+                }
+
+                return $result;
+            };
+
+            return $score($right) <=> $score($left);
+        });
+
+        return $candidates;
+    }
+
+    private function firstNonEmptyString(array $values): ?string
+    {
+        foreach ($values as $value) {
+            $normalized = trim((string) $value);
+
+            if ($normalized !== '') {
+                return $normalized;
+            }
+        }
+
+        return null;
     }
 
     private function stateCacheKey(string $state): string
