@@ -57,10 +57,6 @@ class CompanyClientController extends Controller
             ->orderByDesc('updated_at')
             ->orderByDesc('id');
 
-        if ($status !== '') {
-            $query->where('status', $status);
-        }
-
         if ($search !== '') {
             $query->where(function ($builder) use ($search): void {
                 $builder
@@ -71,19 +67,65 @@ class CompanyClientController extends Controller
         }
 
         $clients = $query
-            ->limit($limit)
+            ->with([
+                'orders:id,company_client_id,status,metadata',
+                'calendarEvents:id,company_client_id,status',
+                'tasks:id,company_client_id,status,board_column,metadata',
+                'questions:id,company_client_id,status,board_column,metadata',
+            ])
             ->get();
 
+        $clientsWithStatus = $clients
+            ->map(function (CompanyClient $client): array {
+                return [
+                    'client' => $client,
+                    'resolved_status' => $this->resolveClientStatus($client),
+                ];
+            })
+            ->values();
+
+        $allClientsForCounts = $company->clients()
+            ->with([
+                'orders:id,company_client_id,status,metadata',
+                'calendarEvents:id,company_client_id,status',
+                'tasks:id,company_client_id,status,board_column,metadata',
+                'questions:id,company_client_id,status,board_column,metadata',
+            ])
+            ->get();
+
+        $counts = [
+            'all' => $allClientsForCounts->count(),
+            'active' => 0,
+            'archived' => 0,
+            'blocked' => 0,
+        ];
+
+        foreach ($allClientsForCounts as $countClient) {
+            $resolvedStatus = $this->resolveClientStatus($countClient);
+            if (array_key_exists($resolvedStatus, $counts)) {
+                $counts[$resolvedStatus]++;
+            }
+        }
+
+        if ($status !== '') {
+            $clientsWithStatus = $clientsWithStatus
+                ->filter(
+                    fn (array $row): bool => (string) ($row['resolved_status'] ?? '') === $status
+                )
+                ->values();
+        }
+
         return response()->json([
-            'clients' => $clients
-                ->map(fn (CompanyClient $client): array => $this->clientCardPayload($client))
+            'clients' => $clientsWithStatus
+                ->take($limit)
+                ->map(
+                    fn (array $row): array => $this->clientCardPayload(
+                        $row['client'],
+                        (string) ($row['resolved_status'] ?? CompanyClient::STATUS_ACTIVE)
+                    )
+                )
                 ->values(),
-            'counts' => [
-                'all' => $company->clients()->count(),
-                'active' => $company->clients()->where('status', CompanyClient::STATUS_ACTIVE)->count(),
-                'archived' => $company->clients()->where('status', CompanyClient::STATUS_ARCHIVED)->count(),
-                'blocked' => $company->clients()->where('status', CompanyClient::STATUS_BLOCKED)->count(),
-            ],
+            'counts' => $counts,
         ]);
     }
 
@@ -124,8 +166,16 @@ class CompanyClientController extends Controller
             ->limit(120)
             ->get();
 
+        $resolvedStatus = $this->resolveClientStatusFromHistory(
+            $client,
+            $orders,
+            $appointments,
+            $tasks,
+            $questions
+        );
+
         return response()->json([
-            'client' => $this->clientDetailsPayload($client),
+            'client' => $this->clientDetailsPayload($client, $resolvedStatus),
             'history' => [
                 'orders' => $orders
                     ->map(fn (CompanyClientOrder $order): array => $this->orderHistoryPayload($order))
@@ -174,7 +224,7 @@ class CompanyClientController extends Controller
         return $client;
     }
 
-    private function clientCardPayload(CompanyClient $client): array
+    private function clientCardPayload(CompanyClient $client, ?string $resolvedStatus = null): array
     {
         $metadata = is_array($client->metadata) ? $client->metadata : [];
 
@@ -196,13 +246,15 @@ class CompanyClientController extends Controller
             $currency = 'TJS';
         }
 
+        $status = $resolvedStatus ?: $this->resolveClientStatus($client);
+
         return [
             'id' => $client->id,
             'name' => $client->name,
             'phone' => $client->phone,
             'email' => $client->email,
             'notes' => $client->notes,
-            'status' => $client->status,
+            'status' => $status,
             'avatar' => $this->clientAvatar($metadata),
             'stats' => [
                 'orders_count' => (int) ($client->orders_count ?? 0),
@@ -224,9 +276,10 @@ class CompanyClientController extends Controller
         ];
     }
 
-    private function clientDetailsPayload(CompanyClient $client): array
+    private function clientDetailsPayload(CompanyClient $client, ?string $resolvedStatus = null): array
     {
         $metadata = is_array($client->metadata) ? $client->metadata : [];
+        $status = $resolvedStatus ?: $this->resolveClientStatus($client);
 
         return [
             'id' => $client->id,
@@ -234,7 +287,7 @@ class CompanyClientController extends Controller
             'phone' => $client->phone,
             'email' => $client->email,
             'notes' => $client->notes,
-            'status' => $client->status,
+            'status' => $status,
             'avatar' => $this->clientAvatar($metadata),
             'metadata' => $metadata !== [] ? $metadata : null,
             'created_at' => $this->toIso8601($client->created_at),
@@ -495,6 +548,175 @@ class CompanyClientController extends Controller
         $normalized = trim($value);
 
         return $normalized === '' ? null : $normalized;
+    }
+
+    private function resolveClientStatus(CompanyClient $client): string
+    {
+        $orders = $client->relationLoaded('orders') ? $client->orders : collect();
+        $appointments = $client->relationLoaded('calendarEvents') ? $client->calendarEvents : collect();
+        $tasks = $client->relationLoaded('tasks') ? $client->tasks : collect();
+        $questions = $client->relationLoaded('questions') ? $client->questions : collect();
+
+        return $this->resolveClientStatusFromHistory(
+            $client,
+            $orders,
+            $appointments,
+            $tasks,
+            $questions
+        );
+    }
+
+    /**
+     * @param iterable<int, CompanyClientOrder> $orders
+     * @param iterable<int, CompanyCalendarEvent> $appointments
+     * @param iterable<int, CompanyClientTask> $tasks
+     * @param iterable<int, CompanyClientQuestion> $questions
+     */
+    private function resolveClientStatusFromHistory(
+        CompanyClient $client,
+        iterable $orders,
+        iterable $appointments,
+        iterable $tasks,
+        iterable $questions
+    ): string {
+        if ($client->status === CompanyClient::STATUS_BLOCKED) {
+            return CompanyClient::STATUS_BLOCKED;
+        }
+
+        $hasActiveActivity = false;
+        $hasAnyVisibleActivity = false;
+        $hasArchivedOrCompletedActivity = false;
+
+        foreach ($orders as $order) {
+            $metadata = is_array($order->metadata) ? $order->metadata : [];
+            if ($this->isArchivedMetadata($metadata)) {
+                $hasArchivedOrCompletedActivity = true;
+                continue;
+            }
+
+            $hasAnyVisibleActivity = true;
+            if ($this->isOrderActiveStatus((string) $order->status)) {
+                $hasActiveActivity = true;
+            } else {
+                $hasArchivedOrCompletedActivity = true;
+            }
+        }
+
+        foreach ($appointments as $appointment) {
+            $hasAnyVisibleActivity = true;
+
+            if ($this->isAppointmentActiveStatus((string) $appointment->status)) {
+                $hasActiveActivity = true;
+            } else {
+                $hasArchivedOrCompletedActivity = true;
+            }
+        }
+
+        foreach ($tasks as $task) {
+            $metadata = is_array($task->metadata) ? $task->metadata : [];
+            if ($this->isArchivedMetadata($metadata)) {
+                $hasArchivedOrCompletedActivity = true;
+                continue;
+            }
+
+            $hasAnyVisibleActivity = true;
+            if ($this->isTaskActiveState((string) $task->status, (string) $task->board_column)) {
+                $hasActiveActivity = true;
+            } else {
+                $hasArchivedOrCompletedActivity = true;
+            }
+        }
+
+        foreach ($questions as $question) {
+            $metadata = is_array($question->metadata) ? $question->metadata : [];
+            if ($this->isArchivedMetadata($metadata)) {
+                $hasArchivedOrCompletedActivity = true;
+                continue;
+            }
+
+            $hasAnyVisibleActivity = true;
+            if ($this->isQuestionActiveState((string) $question->status, (string) $question->board_column)) {
+                $hasActiveActivity = true;
+            } else {
+                $hasArchivedOrCompletedActivity = true;
+            }
+        }
+
+        if ($hasActiveActivity) {
+            return CompanyClient::STATUS_ACTIVE;
+        }
+
+        if ($client->status === CompanyClient::STATUS_ARCHIVED) {
+            return CompanyClient::STATUS_ARCHIVED;
+        }
+
+        if ($hasAnyVisibleActivity || $hasArchivedOrCompletedActivity) {
+            return CompanyClient::STATUS_ARCHIVED;
+        }
+
+        return CompanyClient::STATUS_ACTIVE;
+    }
+
+    private function isOrderActiveStatus(string $status): bool
+    {
+        return in_array($status, [
+            CompanyClientOrder::STATUS_NEW,
+            CompanyClientOrder::STATUS_IN_PROGRESS,
+            CompanyClientOrder::STATUS_APPOINTMENTS,
+            CompanyClientOrder::STATUS_CONFIRMED,
+            CompanyClientOrder::STATUS_HANDED_TO_COURIER,
+        ], true);
+    }
+
+    private function isAppointmentActiveStatus(string $status): bool
+    {
+        return in_array($status, [
+            CompanyCalendarEvent::STATUS_SCHEDULED,
+            CompanyCalendarEvent::STATUS_CONFIRMED,
+        ], true);
+    }
+
+    private function isTaskActiveState(string $status, string $boardColumn): bool
+    {
+        if (in_array($boardColumn, ['new', 'in_progress'], true)) {
+            return true;
+        }
+
+        return in_array($status, [
+            CompanyClientTask::STATUS_TODO,
+            CompanyClientTask::STATUS_IN_PROGRESS,
+        ], true);
+    }
+
+    private function isQuestionActiveState(string $status, string $boardColumn): bool
+    {
+        if (in_array($boardColumn, ['new', 'in_progress'], true)) {
+            return true;
+        }
+
+        return in_array($status, [
+            CompanyClientQuestion::STATUS_OPEN,
+            CompanyClientQuestion::STATUS_IN_PROGRESS,
+        ], true);
+    }
+
+    private function isArchivedMetadata(array $metadata): bool
+    {
+        $archived = $metadata['archived'] ?? null;
+
+        if (is_bool($archived)) {
+            return $archived;
+        }
+
+        if (is_numeric($archived)) {
+            return (int) $archived === 1;
+        }
+
+        if (is_string($archived)) {
+            return in_array(strtolower(trim($archived)), ['1', 'true', 'yes'], true);
+        }
+
+        return false;
     }
 
     private function subscriptionService(): CompanySubscriptionService

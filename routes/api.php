@@ -14,6 +14,7 @@ use App\Http\Controllers\Api\CompanyClientQuestionController;
 use App\Http\Controllers\Api\CompanyEmployeeController;
 use App\Http\Controllers\Api\CompanyCalendarEventController;
 use App\Http\Controllers\Api\CompanySubscriptionController;
+use App\Http\Controllers\Api\DashboardOverviewController;
 use App\Http\Controllers\Api\InstagramIntegrationController;
 use App\Http\Controllers\Api\InvoiceController;
 use App\Http\Controllers\Api\SubscriptionPlanController;
@@ -67,6 +68,12 @@ Route::prefix('company')
         Route::delete('/employees/{employeeId}', [CompanyEmployeeController::class, 'destroy'])
             ->whereNumber('employeeId')
             ->middleware('page.access:employees');
+    });
+
+Route::prefix('dashboard')
+    ->middleware([EnsureUserIsActive::class, 'page.access:dashboard'])
+    ->group(function (): void {
+        Route::get('/overview', [DashboardOverviewController::class, 'overview']);
     });
 
 Route::prefix('client-requests')

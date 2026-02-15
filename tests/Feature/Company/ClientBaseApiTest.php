@@ -183,3 +183,49 @@ test('client base api returns detailed client history', function () {
     expect($response['history']['questions'][0]['id'])->toBe($question->id);
     expect($response['history']['timeline'])->not->toBeEmpty();
 });
+
+test('client base api marks client as archived when only completed activity exists', function () {
+    [$user, $company, $token] = clientBaseApiContext();
+
+    $client = CompanyClient::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'name' => 'Archived Client',
+        'phone' => '+992909998877',
+        'email' => 'archived@example.com',
+        'status' => CompanyClient::STATUS_ACTIVE,
+    ]);
+
+    CompanyClientOrder::query()->create([
+        'user_id' => $user->id,
+        'company_id' => $company->id,
+        'company_client_id' => $client->id,
+        'service_name' => 'Completed order',
+        'quantity' => 1,
+        'unit_price' => 50,
+        'total_price' => 50,
+        'currency' => 'TJS',
+        'ordered_at' => now()->subDay(),
+        'status' => CompanyClientOrder::STATUS_COMPLETED,
+    ]);
+
+    $archivedResponse = $this
+        ->withHeader('Authorization', "Bearer {$token}")
+        ->getJson('/api/client-base?status=archived')
+        ->assertOk()
+        ->json();
+
+    expect($archivedResponse['clients'])->toHaveCount(1);
+    expect($archivedResponse['clients'][0]['id'])->toBe($client->id);
+    expect($archivedResponse['clients'][0]['status'])->toBe(CompanyClient::STATUS_ARCHIVED);
+    expect($archivedResponse['counts']['archived'])->toBe(1);
+    expect($archivedResponse['counts']['active'])->toBe(0);
+
+    $detailsResponse = $this
+        ->withHeader('Authorization', "Bearer {$token}")
+        ->getJson('/api/client-base/'.$client->id)
+        ->assertOk()
+        ->json();
+
+    expect($detailsResponse['client']['status'])->toBe(CompanyClient::STATUS_ARCHIVED);
+});

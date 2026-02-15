@@ -8,16 +8,20 @@ use App\Models\SubscriptionPlan;
 use App\Models\User;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
+use Illuminate\Support\Facades\Schema;
 
 class CompanySubscriptionService
 {
+    private ?bool $usersTableHasCompanyId = null;
+
     public function provisionDefaultWorkspaceForUser(int $userId, string $userName): Company
     {
         $user = User::query()->find($userId);
+        $hasUserCompanyColumn = $this->usersTableHasCompanyId();
 
         $company = null;
 
-        if ($user && $user->company_id) {
+        if ($user && $hasUserCompanyColumn && $user->company_id) {
             $company = Company::query()->find((int) $user->company_id);
         }
 
@@ -45,7 +49,7 @@ class CompanySubscriptionService
             ]);
         }
 
-        if ($user && $user->company_id !== $company->id) {
+        if ($user && $hasUserCompanyColumn && $user->company_id !== $company->id) {
             $user->forceFill([
                 'company_id' => $company->id,
             ])->save();
@@ -189,5 +193,16 @@ class CompanySubscriptionService
         }
 
         $subscription->increment('chat_count_current_period', $count);
+    }
+
+    private function usersTableHasCompanyId(): bool
+    {
+        if ($this->usersTableHasCompanyId !== null) {
+            return $this->usersTableHasCompanyId;
+        }
+
+        $this->usersTableHasCompanyId = Schema::hasColumn('users', 'company_id');
+
+        return $this->usersTableHasCompanyId;
     }
 }
