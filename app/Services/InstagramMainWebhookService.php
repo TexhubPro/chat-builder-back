@@ -46,6 +46,8 @@ class InstagramMainWebhookService
             return;
         }
 
+        $integration = $this->synchronizeRecipientBinding($integration, $recipientId);
+
         $user = User::query()->find($integration->user_id);
         if (! $user) {
             return;
@@ -287,6 +289,59 @@ class InstagramMainWebhookService
             ->orderByDesc('is_active')
             ->orderBy('id')
             ->first();
+    }
+
+    private function synchronizeRecipientBinding(
+        InstagramIntegration $integration,
+        string $recipientId,
+    ): InstagramIntegration {
+        $normalizedRecipientId = trim($recipientId);
+        if ($normalizedRecipientId === '') {
+            return $integration;
+        }
+
+        $currentReceiverId = trim((string) ($integration->receiver_id ?? ''));
+        if ($currentReceiverId === $normalizedRecipientId) {
+            return $integration;
+        }
+
+        $integration->forceFill([
+            'receiver_id' => $normalizedRecipientId,
+        ])->save();
+
+        $integration->refresh();
+
+        $instagramUserId = trim((string) ($integration->instagram_user_id ?? ''));
+        $candidateExternalIds = array_values(array_unique(array_filter([
+            $currentReceiverId,
+            $instagramUserId,
+            $normalizedRecipientId,
+        ], static fn (string $value): bool => $value !== '')));
+
+        if ($candidateExternalIds === []) {
+            return $integration;
+        }
+
+        AssistantChannel::query()
+            ->where('user_id', $integration->user_id)
+            ->where('channel', AssistantChannel::CHANNEL_INSTAGRAM)
+            ->whereIn('external_account_id', $candidateExternalIds)
+            ->get()
+            ->each(function (AssistantChannel $assistantChannel) use ($integration, $normalizedRecipientId): void {
+                $credentials = is_array($assistantChannel->credentials) ? $assistantChannel->credentials : [];
+                $credentials['receiver_id'] = $normalizedRecipientId;
+
+                if (trim((string) ($credentials['instagram_user_id'] ?? '')) === '') {
+                    $credentials['instagram_user_id'] = (string) $integration->instagram_user_id;
+                }
+
+                $assistantChannel->forceFill([
+                    'external_account_id' => $normalizedRecipientId,
+                    'credentials' => $credentials,
+                ])->save();
+            });
+
+        return $integration;
     }
 
     private function resolveAssistant(
@@ -833,7 +888,7 @@ class InstagramMainWebhookService
         );
 
         $accessToken = trim((string) $integration->access_token);
-        $igUserId = trim((string) ($integration->receiver_id ?: $recipientId));
+        $igUserId = trim((string) ($recipientId ?: $integration->receiver_id ?: $integration->instagram_user_id));
 
         if ($accessToken === '' || $igUserId === '') {
             return [null, ChatMessage::TYPE_TEXT, null];

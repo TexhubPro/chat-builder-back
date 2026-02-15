@@ -16,7 +16,7 @@ return new class extends Migration
             $table->string('receiver_id')->nullable();
             $table->longText('access_token');
             $table->timestamp('token_expires_at')->nullable();
-            $table->string('profile_picture_url')->nullable();
+            $table->text('profile_picture_url')->nullable();
             $table->string('avatar_path')->nullable();
             $table->boolean('is_active')->default(true);
             $table->timestamps();

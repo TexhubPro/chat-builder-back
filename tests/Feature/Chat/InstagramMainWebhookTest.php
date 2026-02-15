@@ -385,6 +385,72 @@ test('instagram main webhook responds with voice when inbound message is audio',
     ]);
 });
 
+test('instagram main webhook syncs receiver id and sends outbound via webhook recipient id', function () {
+    [, , $assistant, $integration] = instagramWebhookContext();
+
+    config()->set('openai.assistant.api_key', 'test-openai-key');
+    config()->set('meta.instagram.auto_reply_enabled', true);
+
+    $integration->forceFill([
+        'instagram_user_id' => '178900000001',
+        'receiver_id' => 'wrong_receiver_id',
+    ])->save();
+
+    $assistantChannel = AssistantChannel::query()
+        ->where('assistant_id', $assistant->id)
+        ->where('channel', AssistantChannel::CHANNEL_INSTAGRAM)
+        ->firstOrFail();
+
+    $assistantChannel->forceFill([
+        'external_account_id' => 'wrong_receiver_id',
+        'credentials' => [
+            'provider' => 'instagram',
+            'access_token' => 'instagram-access-token',
+            'instagram_user_id' => '178900000001',
+            'receiver_id' => 'wrong_receiver_id',
+        ],
+    ])->save();
+
+    $this->mock(OpenAiAssistantClient::class, function (MockInterface $mock): void {
+        $mock->shouldReceive('createThread')->once()->andReturn('thread_instagram_sync_1');
+        $mock->shouldReceive('sendTextMessage')->once()->andReturn('message_instagram_sync_1');
+        $mock->shouldReceive('runThreadAndGetResponse')->once()->andReturn('Понял, отвечаю.');
+    });
+
+    InstagramFacade::shouldReceive('sendTextMessage')
+        ->once()
+        ->withArgs(function (
+            string $igUserId,
+            string $recipientId,
+            string $text,
+            ?string $accessToken,
+            bool $store,
+        ): bool {
+            return $igUserId === '178900000001'
+                && $recipientId === 'customer-1001'
+                && $text === 'Понял, отвечаю.'
+                && $accessToken === 'instagram-access-token'
+                && $store === false;
+        })
+        ->andReturn('out_mid_sync_1');
+
+    $response = $this->postJson('/instagram-main-webhook', instagramMainWebhookPayload([
+        'mid' => 'in_mid_sync_1',
+        'text' => 'Привет',
+    ]));
+
+    $response->assertOk()->assertJsonPath('ok', true);
+
+    $integration->refresh();
+    expect((string) ($integration->receiver_id ?? ''))->toBe('178900000001');
+
+    $assistantChannel->refresh();
+    expect((string) ($assistantChannel->external_account_id ?? ''))->toBe('178900000001');
+
+    $credentials = is_array($assistantChannel->credentials) ? $assistantChannel->credentials : [];
+    expect((string) ($credentials['receiver_id'] ?? ''))->toBe('178900000001');
+});
+
 test('instagram main webhook appends repeated mid messages into same chat', function () {
     [, $company] = instagramWebhookContext();
 

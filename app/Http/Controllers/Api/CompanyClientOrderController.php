@@ -978,7 +978,7 @@ class CompanyClientOrderController extends Controller
             $this->instagramTokenRefreshGraceSeconds(),
         );
 
-        $igUserId = trim((string) ($integration->receiver_id ?: $businessAccountId));
+        $igUserId = trim((string) ($businessAccountId ?: $integration->receiver_id ?: $integration->instagram_user_id));
 
         if ($igUserId === '') {
             return null;
