@@ -10,6 +10,7 @@ use App\Models\Company;
 use App\Models\User;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use TexHub\Meta\Facades\Instagram as InstagramFacade;
@@ -262,7 +263,12 @@ class InstagramMainWebhookService
 
     private function resolveIntegration(string $recipientId): ?InstagramIntegration
     {
-        return InstagramIntegration::query()
+        $normalizedRecipientId = trim($recipientId);
+        if ($normalizedRecipientId === '') {
+            return null;
+        }
+
+        $integration = InstagramIntegration::query()
             ->where(function ($builder) use ($recipientId): void {
                 $builder
                     ->where('receiver_id', $recipientId)
@@ -270,6 +276,124 @@ class InstagramMainWebhookService
             })
             ->orderByDesc('id')
             ->first();
+
+        if ($integration instanceof InstagramIntegration) {
+            return $integration;
+        }
+
+        return $this->resolveIntegrationByRecipientProbe($normalizedRecipientId);
+    }
+
+    private function resolveIntegrationByRecipientProbe(string $recipientId): ?InstagramIntegration
+    {
+        $cacheKey = $this->recipientIntegrationCacheKey($recipientId);
+        $cachedIntegrationId = Cache::get($cacheKey);
+
+        if (is_numeric($cachedIntegrationId)) {
+            $cachedIntegration = InstagramIntegration::query()
+                ->whereKey((int) $cachedIntegrationId)
+                ->first();
+
+            if ($cachedIntegration instanceof InstagramIntegration) {
+                return $cachedIntegration;
+            }
+
+            Cache::forget($cacheKey);
+        }
+
+        $scanLimit = max((int) config('meta.instagram.recipient_lookup_scan_limit', 50), 1);
+
+        $candidates = InstagramIntegration::query()
+            ->where('is_active', true)
+            ->whereNotNull('access_token')
+            ->orderByDesc('id')
+            ->limit($scanLimit)
+            ->get();
+
+        foreach ($candidates as $candidate) {
+            if (! $this->integrationOwnsRecipient($candidate, $recipientId)) {
+                continue;
+            }
+
+            Cache::put($cacheKey, (int) $candidate->id, now()->addHours(6));
+
+            return $candidate;
+        }
+
+        return null;
+    }
+
+    private function integrationOwnsRecipient(InstagramIntegration $integration, string $recipientId): bool
+    {
+        $recipientId = trim($recipientId);
+        if ($recipientId === '') {
+            return false;
+        }
+
+        $integration = $this->instagramTokenService->ensureTokenIsFresh(
+            $integration,
+            max((int) config('meta.instagram.token_refresh_grace_seconds', 900), 0),
+        );
+
+        $accessToken = trim((string) ($integration->access_token ?? ''));
+        if ($accessToken === '') {
+            return false;
+        }
+
+        $apiVersion = trim((string) config('meta.instagram.api_version', 'v23.0'));
+        if ($apiVersion === '') {
+            $apiVersion = 'v23.0';
+        }
+
+        foreach ($this->instagramGraphBasesForRecipientLookup() as $graphBase) {
+            $endpoints = array_values(array_unique([
+                rtrim($graphBase, '/').'/'.$apiVersion.'/'.$recipientId,
+                rtrim($graphBase, '/').'/'.$recipientId,
+            ]));
+
+            foreach ($endpoints as $endpoint) {
+                try {
+                    $response = Http::timeout(8)->get($endpoint, [
+                        'fields' => 'id',
+                        'access_token' => $accessToken,
+                    ]);
+                } catch (Throwable) {
+                    continue;
+                }
+
+                if (! $response->successful()) {
+                    continue;
+                }
+
+                $payload = $response->json();
+                if (! is_array($payload)) {
+                    continue;
+                }
+
+                $resolvedId = trim((string) ($payload['id'] ?? ''));
+                if ($resolvedId === $recipientId) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private function instagramGraphBasesForRecipientLookup(): array
+    {
+        $configuredGraphBase = rtrim((string) config('meta.instagram.graph_base', 'https://graph.instagram.com'), '/');
+
+        return array_values(array_unique(array_filter([
+            $configuredGraphBase,
+            'https://graph.instagram.com',
+            'https://graph.facebook.com',
+        ], static fn (string $value): bool => trim($value) !== '')));
+    }
+
+    private function recipientIntegrationCacheKey(string $recipientId): string
+    {
+        return 'instagram:recipient-integration:'.hash('sha256', trim($recipientId));
     }
 
     private function resolveAssistantChannel(

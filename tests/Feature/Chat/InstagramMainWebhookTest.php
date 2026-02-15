@@ -454,6 +454,88 @@ test('instagram main webhook syncs receiver id and sends outbound via webhook re
     expect((string) ($credentials['receiver_id'] ?? ''))->toBe('178900000001');
 });
 
+test('instagram main webhook resolves integration by recipient probe when receiver id differs from oauth user id', function () {
+    [, $company, $assistant, $integration] = instagramWebhookContext();
+
+    config()->set('openai.assistant.api_key', 'test-openai-key');
+    config()->set('meta.instagram.auto_reply_enabled', true);
+    config()->set('meta.instagram.graph_base', 'https://graph.instagram.com');
+    config()->set('meta.instagram.api_version', 'v23.0');
+
+    $integration->forceFill([
+        'instagram_user_id' => '24498714506445566',
+        'receiver_id' => '24498714506445566',
+        'token_expires_at' => now()->addDays(30),
+    ])->save();
+
+    $assistantChannel = AssistantChannel::query()
+        ->where('assistant_id', $assistant->id)
+        ->where('channel', AssistantChannel::CHANNEL_INSTAGRAM)
+        ->firstOrFail();
+
+    $assistantChannel->forceFill([
+        'external_account_id' => '24498714506445566',
+        'credentials' => [
+            'provider' => 'instagram',
+            'access_token' => 'instagram-access-token',
+            'instagram_user_id' => '24498714506445566',
+            'receiver_id' => '24498714506445566',
+            'token_expires_at' => now()->addDays(30)->toIso8601String(),
+        ],
+    ])->save();
+
+    Http::fake([
+        'https://graph.instagram.com/v23.0/34773679555564224*' => Http::response([
+            'id' => '34773679555564224',
+        ], 200),
+    ]);
+
+    $this->mock(OpenAiAssistantClient::class, function (MockInterface $mock): void {
+        $mock->shouldReceive('createThread')->once()->andReturn('thread_instagram_probe_1');
+        $mock->shouldReceive('sendTextMessage')->once()->andReturn('message_instagram_probe_1');
+        $mock->shouldReceive('runThreadAndGetResponse')->once()->andReturn('Отвечаю через новый receiver id.');
+    });
+
+    InstagramFacade::shouldReceive('sendTextMessage')
+        ->once()
+        ->withArgs(function (
+            string $igUserId,
+            string $recipientId,
+            string $text,
+            ?string $accessToken,
+            bool $store,
+        ): bool {
+            return $igUserId === '34773679555564224'
+                && $recipientId === 'customer-1001'
+                && $text === 'Отвечаю через новый receiver id.'
+                && $accessToken === 'instagram-access-token'
+                && $store === false;
+        })
+        ->andReturn('out_mid_probe_1');
+
+    $payload = instagramMainWebhookPayload([
+        'mid' => 'in_mid_probe_1',
+        'text' => 'салом',
+    ]);
+    data_set($payload, 'entry.0.messaging.0.recipient.id', '34773679555564224');
+
+    $response = $this->postJson('/instagram-main-webhook', $payload);
+
+    $response->assertOk()->assertJsonPath('ok', true);
+
+    $integration->refresh();
+    expect((string) ($integration->receiver_id ?? ''))->toBe('34773679555564224');
+
+    $assistantChannel->refresh();
+    expect((string) ($assistantChannel->external_account_id ?? ''))->toBe('34773679555564224');
+
+    $this->assertDatabaseHas('chats', [
+        'company_id' => $company->id,
+        'channel' => 'instagram',
+        'channel_chat_id' => '34773679555564224:customer-1001',
+    ]);
+});
+
 test('instagram main webhook resolves customer profile for new chat and stores real name and avatar', function () {
     [, $company] = instagramWebhookContext();
 
