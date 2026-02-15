@@ -634,6 +634,11 @@ test('instagram main webhook resolves customer profile for new chat and stores r
     config()->set('meta.instagram.api_version', 'v23.0');
 
     Http::fake([
+        'https://graph.instagram.com/v23.0/customer-1001*' => Http::response([
+            'name' => 'Mahmud Iskhod',
+            'username' => 'mahmud.ig',
+            'profile_pic' => 'https://cdn.example.com/avatars/mahmud.jpg',
+        ], 200),
         'https://graph.facebook.com/v23.0/customer-1001*' => Http::response([
             'name' => 'Mahmud Iskhod',
             'profile_pic' => 'https://cdn.example.com/avatars/mahmud.jpg',
@@ -658,14 +663,72 @@ test('instagram main webhook resolves customer profile for new chat and stores r
     expect((string) $chat->name)->toBe('Mahmud Iskhod');
     expect((string) $chat->avatar)->toBe('https://cdn.example.com/avatars/mahmud.jpg');
     expect((string) data_get($chat->metadata, 'instagram.customer_profile.name'))->toBe('Mahmud Iskhod');
+    expect((string) data_get($chat->metadata, 'instagram.customer_profile.username'))->toBe('mahmud.ig');
     expect((string) data_get($chat->metadata, 'instagram.customer_profile.avatar'))
         ->toBe('https://cdn.example.com/avatars/mahmud.jpg');
 
     Http::assertSent(function ($request): bool {
         return $request->method() === 'GET'
-            && str_starts_with($request->url(), 'https://graph.facebook.com/v23.0/customer-1001')
+            && str_starts_with($request->url(), 'https://graph.instagram.com/v23.0/customer-1001')
             && (string) ($request['fields'] ?? '') === 'name,username,profile_pic,profile_picture_url';
     });
+});
+
+test('instagram main webhook refreshes existing placeholder chat name and avatar using instagram profile', function () {
+    [, $company] = instagramWebhookContext();
+
+    config()->set('meta.instagram.auto_reply_enabled', false);
+    config()->set('meta.instagram.resolve_customer_profile', true);
+    config()->set('meta.instagram.customer_profile_refresh_minutes', 5);
+    config()->set('meta.instagram.graph_base', 'https://graph.instagram.com');
+    config()->set('meta.instagram.api_version', 'v23.0');
+
+    $chat = Chat::query()->create([
+        'user_id' => $company->user_id,
+        'company_id' => $company->id,
+        'assistant_id' => null,
+        'assistant_channel_id' => null,
+        'channel' => 'instagram',
+        'channel_chat_id' => '178900000001:customer-1001',
+        'channel_user_id' => 'customer-1001',
+        'name' => 'Instagram customer-1001',
+        'avatar' => null,
+        'status' => Chat::STATUS_OPEN,
+        'metadata' => [
+            'instagram' => [
+                'customer_profile' => [
+                    'resolved_at' => now()->subHours(2)->toIso8601String(),
+                ],
+            ],
+        ],
+    ]);
+
+    Http::fake([
+        'https://graph.instagram.com/v23.0/customer-1001*' => Http::response([
+            'name' => 'Real Customer Name',
+            'username' => 'real.customer',
+            'profile_pic' => 'https://cdn.example.com/avatars/real-customer.jpg',
+        ], 200),
+    ]);
+
+    InstagramFacade::shouldReceive('sendTextMessage')->never();
+    InstagramFacade::shouldReceive('sendMediaMessage')->never();
+
+    $response = $this->postJson('/instagram-main-webhook', instagramMainWebhookPayload([
+        'mid' => 'in_mid_profile_refresh_1',
+        'text' => 'Здравствуйте',
+    ]));
+
+    $response->assertOk()->assertJsonPath('ok', true);
+
+    $chat->refresh();
+
+    expect((string) $chat->name)->toBe('Real Customer Name');
+    expect((string) $chat->avatar)->toBe('https://cdn.example.com/avatars/real-customer.jpg');
+    expect((string) data_get($chat->metadata, 'instagram.customer_profile.name'))->toBe('Real Customer Name');
+    expect((string) data_get($chat->metadata, 'instagram.customer_profile.username'))->toBe('real.customer');
+    expect((string) data_get($chat->metadata, 'instagram.customer_profile.avatar'))
+        ->toBe('https://cdn.example.com/avatars/real-customer.jpg');
 });
 
 test('instagram main webhook appends repeated mid messages into same chat', function () {
@@ -712,4 +775,48 @@ test('instagram main webhook appends repeated mid messages into same chat', func
     expect($inboundMessages[1]->channel_message_id)->toBe('random_mid_direct:text-1527459824000');
     expect($inboundMessages[0]->text)->toBe('салом');
     expect($inboundMessages[1]->text)->toBe('салом');
+});
+
+test('instagram main webhook ignores read events and does not store message seen entries', function () {
+    [, $company] = instagramWebhookContext();
+
+    config()->set('meta.instagram.auto_reply_enabled', true);
+
+    InstagramFacade::shouldReceive('sendTextMessage')->never();
+    InstagramFacade::shouldReceive('sendMediaMessage')->never();
+
+    $payload = [
+        'object' => 'instagram',
+        'entry' => [
+            [
+                'id' => 'entry_read_1',
+                'time' => now()->valueOf(),
+                'messaging' => [
+                    [
+                        'sender' => ['id' => 'customer-1001'],
+                        'recipient' => ['id' => '178900000001'],
+                        'timestamp' => now()->valueOf(),
+                        'read' => [
+                            'mid' => 'in_mid_1',
+                            'watermark' => now()->valueOf(),
+                        ],
+                    ],
+                ],
+            ],
+        ],
+    ];
+
+    $response = $this->postJson('/instagram-main-webhook', $payload);
+    $response->assertOk()->assertJsonPath('ok', true);
+
+    $chatCount = Chat::query()
+        ->where('company_id', $company->id)
+        ->where('channel', 'instagram')
+        ->count();
+    expect($chatCount)->toBe(0);
+
+    $messagesCount = ChatMessage::query()
+        ->where('company_id', $company->id)
+        ->count();
+    expect($messagesCount)->toBe(0);
 });

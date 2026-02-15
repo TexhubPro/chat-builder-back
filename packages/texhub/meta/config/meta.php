@@ -16,5 +16,6 @@ return [
         'auto_reply_enabled' => env('META_INSTAGRAM_AUTO_REPLY_ENABLED', true),
         'voice_reply_for_audio' => env('META_INSTAGRAM_VOICE_REPLY_FOR_AUDIO', true),
         'resolve_customer_profile' => env('META_INSTAGRAM_RESOLVE_CUSTOMER_PROFILE', true),
+        'customer_profile_refresh_minutes' => env('META_INSTAGRAM_CUSTOMER_PROFILE_REFRESH_MINUTES', 1440),
     ],
 ];
