@@ -375,6 +375,31 @@ class InstagramMainWebhookService
                     return true;
                 }
             }
+
+            $subscribedAppsEndpoint = rtrim($graphBase, '/').'/'.$apiVersion.'/'.$recipientId.'/subscribed_apps';
+
+            try {
+                $response = Http::timeout(8)->get($subscribedAppsEndpoint, [
+                    'access_token' => $accessToken,
+                ]);
+            } catch (Throwable) {
+                continue;
+            }
+
+            if (! $response->successful()) {
+                continue;
+            }
+
+            $payload = $response->json();
+            if (! is_array($payload)) {
+                continue;
+            }
+
+            if (is_array($payload['error'] ?? null)) {
+                continue;
+            }
+
+            return true;
         }
 
         return false;
