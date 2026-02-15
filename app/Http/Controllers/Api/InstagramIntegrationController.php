@@ -765,7 +765,7 @@ class InstagramIntegrationController extends Controller
                 return $scoreComparison;
             }
 
-            return ((int) ($left['order'] ?? 0)) <=> ((int) ($right['order'] ?? 0);
+            return ((int) ($left['order'] ?? 0)) <=> ((int) ($right['order'] ?? 0));
         });
 
         return array_values(array_map(
