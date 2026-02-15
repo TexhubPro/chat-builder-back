@@ -119,7 +119,7 @@ test('company settings api updates company data and appointment settings', funct
                 ],
             ],
             'ai' => [
-                'response_languages' => ['ru', 'en', 'tg'],
+                'response_languages' => ['ru', 'en', 'tg', 'kk', 'ar'],
             ],
         ],
     ];
@@ -171,6 +171,8 @@ test('company settings api updates company data and appointment settings', funct
         'ru',
         'en',
         'tg',
+        'kk',
+        'ar',
     ]);
 });
 

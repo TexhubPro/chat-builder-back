@@ -1683,7 +1683,7 @@ class AssistantCrmAutomationService
         return $this->normalizeRequiredFields(
             data_get($settings, 'ai.response_languages'),
             ['ru'],
-            ['ru', 'en', 'tg', 'uz', 'tr', 'fa'],
+            ['ru', 'en', 'tg', 'uz', 'tr', 'fa', 'kk', 'ar'],
         );
     }
 

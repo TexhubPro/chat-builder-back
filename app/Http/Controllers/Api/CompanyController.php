@@ -49,6 +49,8 @@ class CompanyController extends Controller
         'uz',
         'tr',
         'fa',
+        'kk',
+        'ar',
     ];
     private const BUSINESS_CURRENCY_OPTIONS = [
         'TJS',
