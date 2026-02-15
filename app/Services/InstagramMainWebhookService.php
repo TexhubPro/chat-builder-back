@@ -48,6 +48,7 @@ class InstagramMainWebhookService
         }
 
         $integration = $this->synchronizeRecipientBinding($integration, $recipientId);
+        $integration = $this->refreshIntegrationTokenForProfileLookup($integration);
 
         $parts = $this->normalizeInboundParts($event);
         if ($parts === []) {
@@ -680,6 +681,31 @@ class InstagramMainWebhookService
             return [];
         }
 
+        return $this->fetchInstagramCustomerProfileWithToken($normalizedSenderId, $accessToken);
+    }
+
+    private function refreshIntegrationTokenForProfileLookup(
+        InstagramIntegration $integration,
+    ): InstagramIntegration {
+        $expiresAt = $integration->token_expires_at;
+        if (! $expiresAt instanceof Carbon) {
+            return $integration;
+        }
+
+        try {
+            return $this->instagramTokenService->ensureTokenIsFresh(
+                $integration,
+                max((int) config('meta.instagram.token_refresh_grace_seconds', 900), 0),
+            );
+        } catch (Throwable) {
+            return $integration;
+        }
+    }
+
+    private function fetchInstagramCustomerProfileWithToken(
+        string $normalizedSenderId,
+        string $accessToken,
+    ): array {
         $apiVersion = trim((string) config('meta.instagram.api_version', 'v23.0'));
         if ($apiVersion === '') {
             $apiVersion = 'v23.0';
@@ -699,41 +725,57 @@ class InstagramMainWebhookService
             ]));
 
             foreach ($endpoints as $endpoint) {
-                try {
-                    $response = Http::timeout(8)->get($endpoint, [
-                        'fields' => 'name,username,profile_pic,profile_picture_url',
-                        'access_token' => $accessToken,
-                    ]);
-                } catch (Throwable) {
-                    continue;
-                }
+                foreach ($this->instagramCustomerProfileFieldSets() as $fields) {
+                    try {
+                        $response = Http::timeout(8)->get($endpoint, [
+                            'fields' => $fields,
+                            'access_token' => $accessToken,
+                        ]);
+                    } catch (Throwable) {
+                        continue;
+                    }
 
-                if (! $response->successful()) {
-                    continue;
-                }
+                    if (! $response->successful()) {
+                        continue;
+                    }
 
-                $payload = $response->json();
-                if (! is_array($payload)) {
-                    continue;
-                }
+                    $payload = $response->json();
+                    if (! is_array($payload)) {
+                        continue;
+                    }
 
-                $name = trim((string) ($payload['name'] ?? ''));
-                $username = trim((string) ($payload['username'] ?? ''));
-                $avatar = trim((string) ($payload['profile_pic'] ?? $payload['profile_picture_url'] ?? ''));
+                    $name = trim((string) ($payload['name'] ?? ''));
+                    $username = trim((string) ($payload['username'] ?? ''));
+                    $avatar = trim((string) ($payload['profile_pic'] ?? $payload['profile_picture_url'] ?? ''));
 
-                $profile = array_filter([
-                    'name' => $name !== '' ? Str::limit($name, 160, '') : null,
-                    'username' => $username !== '' ? Str::limit($username, 160, '') : null,
-                    'avatar' => $avatar !== '' ? Str::limit($avatar, 2048, '') : null,
-                ], static fn (mixed $value): bool => $value !== null && $value !== '');
+                    $profile = array_filter([
+                        'name' => $name !== '' ? Str::limit($name, 160, '') : null,
+                        'username' => $username !== '' ? Str::limit($username, 160, '') : null,
+                        'avatar' => $avatar !== '' ? Str::limit($avatar, 2048, '') : null,
+                    ], static fn (mixed $value): bool => $value !== null && $value !== '');
 
-                if ($profile !== []) {
-                    return $profile;
+                    if ($profile !== []) {
+                        return $profile;
+                    }
                 }
             }
         }
 
         return [];
+    }
+
+    private function instagramCustomerProfileFieldSets(): array
+    {
+        return [
+            'name,username,profile_pic,profile_picture_url',
+            'name,username,profile_pic',
+            'name,username,profile_picture_url',
+            'username,profile_pic,profile_picture_url',
+            'username,profile_picture_url',
+            'username,profile_pic',
+            'name,username',
+            'username',
+        ];
     }
 
     private function normalizeInboundParts(array $event): array

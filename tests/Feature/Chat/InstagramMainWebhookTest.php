@@ -81,6 +81,7 @@ function instagramWebhookContext(string $subscriptionStatus = CompanySubscriptio
         'username' => 'my_company',
         'receiver_id' => '178900000001',
         'access_token' => 'instagram-access-token',
+        'token_expires_at' => now()->addDays(30),
         'is_active' => true,
     ]);
 
