@@ -633,10 +633,12 @@ class InstagramIntegrationController extends Controller
         ], static fn (string $value): bool => trim($value) !== '')));
 
         foreach ($graphBases as $index => $graphBase) {
-            $profile = $this->requestProfileFromGraphBase($graphBase, $accessToken, $index === 0);
+            $profiles = $this->requestProfileFromGraphBase($graphBase, $accessToken, $index === 0);
 
-            if (is_array($profile)) {
-                $variants[] = $profile;
+            foreach ($profiles as $profile) {
+                if (is_array($profile)) {
+                    $variants[] = $profile;
+                }
             }
         }
 
@@ -651,86 +653,125 @@ class InstagramIntegrationController extends Controller
         string $graphBase,
         string $accessToken,
         bool $throwOnFailure,
-    ): ?array {
-        $response = Http::get($graphBase . '/me', [
-            'fields' => 'id,user_id,username,profile_picture_url',
-            'access_token' => $accessToken,
-        ]);
+    ): array {
+        $apiVersion = trim((string) config('meta.instagram.api_version', 'v23.0'));
+        if ($apiVersion === '') {
+            $apiVersion = 'v23.0';
+        }
 
-        if (! $response->successful()) {
-            if ($throwOnFailure) {
+        $endpoints = array_values(array_unique([
+            rtrim($graphBase, '/').'/me',
+            rtrim($graphBase, '/').'/'.$apiVersion.'/me',
+        ]));
+
+        $variants = [];
+        $lastErrorResponse = null;
+        $hadInvalidPayload = false;
+
+        foreach ($endpoints as $endpoint) {
+            $response = Http::get($endpoint, [
+                'fields' => 'id,user_id,username,profile_picture_url',
+                'access_token' => $accessToken,
+            ]);
+
+            if (! $response->successful()) {
+                $lastErrorResponse = $response;
+                continue;
+            }
+
+            $payload = $response->json();
+            if (! is_array($payload)) {
+                $hadInvalidPayload = true;
+                continue;
+            }
+
+            $variants[] = $payload;
+        }
+
+        if ($throwOnFailure && $variants === []) {
+            if ($lastErrorResponse instanceof Response) {
                 throw new \RuntimeException(
-                    $this->httpErrorMessage('Failed to fetch Instagram profile.', $response)
+                    $this->httpErrorMessage('Failed to fetch Instagram profile.', $lastErrorResponse)
                 );
             }
 
-            return null;
-        }
-
-        $payload = $response->json();
-
-        if (! is_array($payload)) {
-            if ($throwOnFailure) {
+            if ($hadInvalidPayload) {
                 throw new \RuntimeException('Invalid Instagram profile response.');
             }
 
-            return null;
+            throw new \RuntimeException('Failed to fetch Instagram profile.');
         }
 
-        return $payload;
+        return $variants;
     }
 
     private function extractReceiverIdCandidates(array $profiles, string $oauthUserId): array
     {
         $candidates = [];
+        $order = 0;
+
+        $registerCandidate = static function (array &$buffer, string $value, int $sourcePriority, int $order): void {
+            $normalized = trim($value);
+            if ($normalized === '') {
+                return;
+            }
+
+            $score = $sourcePriority;
+
+            if (str_starts_with($normalized, '178')) {
+                $score += 100;
+            }
+
+            if (ctype_digit($normalized)) {
+                $score += 20;
+            }
+
+            if (strlen($normalized) >= 12) {
+                $score += 10;
+            }
+
+            if (! array_key_exists($normalized, $buffer)) {
+                $buffer[$normalized] = [
+                    'id' => $normalized,
+                    'score' => $score,
+                    'order' => $order,
+                ];
+
+                return;
+            }
+
+            $buffer[$normalized]['score'] = max((int) $buffer[$normalized]['score'], $score);
+            $buffer[$normalized]['order'] = min((int) $buffer[$normalized]['order'], $order);
+        };
 
         foreach ($profiles as $profile) {
             if (! is_array($profile)) {
                 continue;
             }
 
-            $profileId = trim((string) ($profile['id'] ?? ''));
-            $profileUserId = trim((string) ($profile['user_id'] ?? ''));
-
-            if ($profileId !== '') {
-                $candidates[] = $profileId;
-            }
-
-            if ($profileUserId !== '') {
-                $candidates[] = $profileUserId;
-            }
+            $registerCandidate($candidates, (string) ($profile['id'] ?? ''), 300, $order);
+            $order += 1;
+            $registerCandidate($candidates, (string) ($profile['user_id'] ?? ''), 200, $order);
+            $order += 1;
         }
 
-        $normalizedOauthId = trim($oauthUserId);
-        if ($normalizedOauthId !== '') {
-            $candidates[] = $normalizedOauthId;
-        }
+        $registerCandidate($candidates, $oauthUserId, 100, $order);
 
-        $candidates = array_values(array_unique(array_filter($candidates, static fn (string $value): bool => $value !== '')));
+        $normalizedCandidates = array_values($candidates);
+        usort($normalizedCandidates, static function (array $left, array $right): int {
+            $scoreComparison = ((int) ($right['score'] ?? 0)) <=> ((int) ($left['score'] ?? 0));
 
-        usort($candidates, static function (string $left, string $right): int {
-            $score = static function (string $value): int {
-                $result = 0;
+            if ($scoreComparison !== 0) {
+                return $scoreComparison;
+            }
 
-                if (str_starts_with($value, '178')) {
-                    $result += 100;
-                }
-
-                if (ctype_digit($value)) {
-                    $result += 20;
-                }
-
-                if (strlen($value) >= 12) {
-                    $result += 10;
-                }
-
-                return $result;
-            };
-
-            return $score($right) <=> $score($left);
+            return ((int) ($left['order'] ?? 0)) <=> ((int) ($right['order'] ?? 0);
         });
 
-        return $candidates;
+        return array_values(array_map(
+            static fn (array $item): string => (string) ($item['id'] ?? ''),
+            array_filter($normalizedCandidates, static fn (array $item): bool => trim((string) ($item['id'] ?? '')) !== '')
+        ));
     }
 
     private function firstNonEmptyString(array $values): ?string
