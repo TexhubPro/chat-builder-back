@@ -32,14 +32,14 @@ class InstagramIntegrationController extends Controller
         $company = $this->resolveCompany($user);
         $assistant = $company->assistants()->whereKey($assistantId)->first();
 
-        if (! $assistant) {
+        if (!$assistant) {
             return response()->json([
                 'message' => 'Assistant not found.',
             ], 404);
         }
 
         [$hasCapacity, $capacityMessage] = $this->canConnectInstagramChannel($assistant);
-        if (! $hasCapacity) {
+        if (!$hasCapacity) {
             return response()->json([
                 'message' => $capacityMessage,
             ], 422);
@@ -146,11 +146,11 @@ class InstagramIntegrationController extends Controller
             $profileId = trim((string) ($profile['id'] ?? ''));
             $profileUserId = trim((string) ($profile['user_id'] ?? ''));
             $username = $this->firstNonEmptyString(array_map(
-                fn (array $item): string => trim((string) ($item['username'] ?? '')),
+                fn(array $item): string => trim((string) ($item['username'] ?? '')),
                 $profiles,
             ));
             $profilePictureUrl = $this->firstNonEmptyString(array_map(
-                fn (array $item): string => trim((string) ($item['profile_picture_url'] ?? '')),
+                fn(array $item): string => trim((string) ($item['profile_picture_url'] ?? '')),
                 $profiles,
             ));
 
@@ -169,7 +169,7 @@ class InstagramIntegrationController extends Controller
             }
 
             $user = User::query()->find((int) ($statePayload['user_id'] ?? 0));
-            if (! $user) {
+            if (!$user) {
                 return redirect()->away($this->appendQuery($frontendRedirectUrl, [
                     'instagram_status' => 'error',
                     'assistant_id' => $assistantId > 0 ? $assistantId : null,
@@ -182,12 +182,12 @@ class InstagramIntegrationController extends Controller
                 ->where('user_id', $user->id)
                 ->first();
 
-            if (! $company) {
+            if (!$company) {
                 $company = $this->subscriptionService()->provisionDefaultWorkspaceForUser($user->id, $user->name);
             }
 
             $assistant = $company->assistants()->whereKey($assistantId)->first();
-            if (! $assistant) {
+            if (!$assistant) {
                 return redirect()->away($this->appendQuery($frontendRedirectUrl, [
                     'instagram_status' => 'error',
                     'assistant_id' => $assistantId > 0 ? $assistantId : null,
@@ -196,7 +196,7 @@ class InstagramIntegrationController extends Controller
             }
 
             [$hasCapacity, $capacityMessage] = $this->canConnectInstagramChannel($assistant);
-            if (! $hasCapacity) {
+            if (!$hasCapacity) {
                 return redirect()->away($this->appendQuery($frontendRedirectUrl, [
                     'instagram_status' => 'error',
                     'assistant_id' => $assistantId > 0 ? $assistantId : null,
@@ -218,7 +218,7 @@ class InstagramIntegrationController extends Controller
                 array_values(array_unique(array_filter([
                     ...$receiverIdCandidates,
                     $integrationKey,
-                ], static fn (string $value): bool => $value !== ''))),
+                ], static fn(string $value): bool => $value !== ''))),
                 $subscribedFields,
             );
 
@@ -257,7 +257,7 @@ class InstagramIntegrationController extends Controller
             $externalAccountId = $receiverId !== '' ? $receiverId : $integrationKey;
             $existingMetadata = is_array($assistantChannel?->metadata) ? $assistantChannel->metadata : [];
 
-            if (! $assistantChannel) {
+            if (!$assistantChannel) {
                 $assistantChannel = new AssistantChannel([
                     'user_id' => $user->id,
                     'company_id' => $company->id,
@@ -289,7 +289,7 @@ class InstagramIntegrationController extends Controller
                 'subscribed_apps_payload' => is_array($subscriptionPayload) ? $subscriptionPayload : null,
                 'subscribed_at' => is_array($subscriptionPayload) ? now()->toIso8601String() : null,
                 'connected_at' => now()->toIso8601String(),
-            ], static fn (mixed $value): bool => $value !== null && $value !== ''));
+            ], static fn(mixed $value): bool => $value !== null && $value !== ''));
             $assistantChannel->save();
 
             return redirect()->away($this->appendQuery($frontendRedirectUrl, [
@@ -331,13 +331,13 @@ class InstagramIntegrationController extends Controller
     {
         $company = $assistant->company;
 
-        if (! $company) {
+        if (!$company) {
             return [false, 'Company not found for assistant.'];
         }
 
         [$_subscription, $hasActiveSubscription, $integrationLimit] = $this->subscriptionContext($company);
 
-        if (! $hasActiveSubscription) {
+        if (!$hasActiveSubscription) {
             return [false, 'Cannot connect integration while subscription is inactive.'];
         }
 
@@ -356,7 +356,7 @@ class InstagramIntegrationController extends Controller
             ->where('channel', '!=', AssistantChannel::CHANNEL_INSTAGRAM)
             ->count();
 
-        if (! ($existing && $existing->is_active) && $activeCount >= $integrationLimit) {
+        if (!($existing && $existing->is_active) && $activeCount >= $integrationLimit) {
             return [false, 'Integration limit reached for current subscription.'];
         }
 
@@ -367,7 +367,7 @@ class InstagramIntegrationController extends Controller
     {
         $subscription = $company->subscription()->with('plan')->first();
 
-        if (! $subscription) {
+        if (!$subscription) {
             return [null, false, 0];
         }
 
@@ -393,7 +393,7 @@ class InstagramIntegrationController extends Controller
         }
 
         $parsed = parse_url($authUrl);
-        if ($parsed === false || ! isset($parsed['scheme'], $parsed['host'])) {
+        if ($parsed === false || !isset($parsed['scheme'], $parsed['host'])) {
             $parsed = [
                 'scheme' => 'https',
                 'host' => 'www.instagram.com',
@@ -410,20 +410,20 @@ class InstagramIntegrationController extends Controller
 
         if ($clientId !== '') {
             $query['client_id'] = $clientId;
-        } elseif (! isset($query['client_id']) || trim((string) $query['client_id']) === '') {
+        } elseif (!isset($query['client_id']) || trim((string) $query['client_id']) === '') {
             $query['client_id'] = $clientId;
         }
 
         // Keep authorize and token exchange redirect_uri strictly identical.
         $query['redirect_uri'] = $redirectUri;
 
-        if (! isset($query['response_type']) || trim((string) $query['response_type']) === '') {
+        if (!isset($query['response_type']) || trim((string) $query['response_type']) === '') {
             $query['response_type'] = 'code';
         }
 
         if ($scopes !== '') {
             $query['scope'] = $scopes;
-        } elseif (! isset($query['scope']) || trim((string) $query['scope']) === '') {
+        } elseif (!isset($query['scope']) || trim((string) $query['scope']) === '') {
             $query['scope'] = $scopes;
         }
 
@@ -481,7 +481,7 @@ class InstagramIntegrationController extends Controller
             'code' => $code,
         ]);
 
-        if (! $response->successful()) {
+        if (!$response->successful()) {
             throw new \RuntimeException(
                 $this->httpErrorMessage(
                     'Failed to exchange Instagram authorization code.',
@@ -492,7 +492,7 @@ class InstagramIntegrationController extends Controller
 
         $payload = $response->json();
 
-        if (! is_array($payload)) {
+        if (!is_array($payload)) {
             throw new \RuntimeException('Invalid Instagram token response.');
         }
 
@@ -535,15 +535,15 @@ class InstagramIntegrationController extends Controller
             $apiVersion = 'v23.0';
         }
 
-        $endpoint = $graphBase.'/'.$apiVersion.'/'.$instagramUserId.'/subscribed_apps';
+        $endpoint = $graphBase . '/' . $apiVersion . '/' . $instagramUserId . '/subscribed_apps';
         $query = [
             'subscribed_fields' => $subscribedFields,
             'access_token' => $accessToken,
         ];
 
-        $response = Http::post($endpoint.'?'.http_build_query($query, '', '&', PHP_QUERY_RFC3986));
+        $response = Http::post($endpoint . '?' . http_build_query($query, '', '&', PHP_QUERY_RFC3986));
 
-        if (! $response->successful()) {
+        if (!$response->successful()) {
             throw new \RuntimeException(
                 $this->httpErrorMessage(
                     'Failed to subscribe Instagram account to webhook events.',
@@ -553,7 +553,7 @@ class InstagramIntegrationController extends Controller
         }
 
         $payload = $response->json();
-        if (! is_array($payload)) {
+        if (!is_array($payload)) {
             throw new \RuntimeException('Invalid Instagram subscribed_apps response.');
         }
 
@@ -562,8 +562,8 @@ class InstagramIntegrationController extends Controller
             $error = $this->extractInstagramApiErrorMessage($payload);
             throw new \RuntimeException(
                 $error !== null
-                    ? 'Instagram webhook subscription request was rejected: '.$error
-                    : 'Instagram webhook subscription request was rejected.'
+                ? 'Instagram webhook subscription request was rejected: ' . $error
+                : 'Instagram webhook subscription request was rejected.'
             );
         }
 
@@ -576,15 +576,15 @@ class InstagramIntegrationController extends Controller
         string $subscribedFields,
     ): array {
         $normalizedCandidates = array_values(array_unique(array_filter(
-            array_map(static fn (mixed $value): string => trim((string) $value), $receiverIdCandidates),
-            static fn (string $value): bool => $value !== ''
+            array_map(static fn(mixed $value): string => trim((string) $value), $receiverIdCandidates),
+            static fn(string $value): bool => $value !== ''
         )));
 
         if ($normalizedCandidates === []) {
             throw new \RuntimeException('Instagram account id was not returned.');
         }
 
-        if (! $this->shouldSubscribeInstagramWebhooks()) {
+        if (!$this->shouldSubscribeInstagramWebhooks()) {
             return [$normalizedCandidates[0], null];
         }
 
@@ -616,7 +616,7 @@ class InstagramIntegrationController extends Controller
         $graphBase = rtrim((string) config('meta.instagram.graph_base', 'https://graph.instagram.com'), '/');
 
         $payload = $this->requestProfileFromGraphBase($graphBase, $accessToken, true);
-        if (! is_array($payload)) {
+        if (!is_array($payload)) {
             throw new \RuntimeException('Invalid Instagram profile response.');
         }
 
@@ -630,15 +630,13 @@ class InstagramIntegrationController extends Controller
         $graphBases = array_values(array_unique(array_filter([
             $configuredGraphBase,
             'https://graph.facebook.com',
-        ], static fn (string $value): bool => trim($value) !== '')));
+        ], static fn(string $value): bool => trim($value) !== '')));
 
         foreach ($graphBases as $index => $graphBase) {
-            $profiles = $this->requestProfileFromGraphBase($graphBase, $accessToken, $index === 0);
+            $profile = $this->requestProfileFromGraphBase($graphBase, $accessToken, $index === 0);
 
-            foreach ($profiles as $profile) {
-                if (is_array($profile)) {
-                    $variants[] = $profile;
-                }
+            if (is_array($profile)) {
+                $variants[] = $profile;
             }
         }
 
@@ -653,125 +651,86 @@ class InstagramIntegrationController extends Controller
         string $graphBase,
         string $accessToken,
         bool $throwOnFailure,
-    ): array {
-        $apiVersion = trim((string) config('meta.instagram.api_version', 'v23.0'));
-        if ($apiVersion === '') {
-            $apiVersion = 'v23.0';
-        }
+    ): ?array {
+        $response = Http::get($graphBase . '/me', [
+            'fields' => 'id,user_id,username,profile_picture_url',
+            'access_token' => $accessToken,
+        ]);
 
-        $endpoints = array_values(array_unique([
-            rtrim($graphBase, '/').'/me',
-            rtrim($graphBase, '/').'/'.$apiVersion.'/me',
-        ]));
-
-        $variants = [];
-        $lastErrorResponse = null;
-        $hadInvalidPayload = false;
-
-        foreach ($endpoints as $endpoint) {
-            $response = Http::get($endpoint, [
-                'fields' => 'id,user_id,username,profile_picture_url',
-                'access_token' => $accessToken,
-            ]);
-
-            if (! $response->successful()) {
-                $lastErrorResponse = $response;
-                continue;
-            }
-
-            $payload = $response->json();
-            if (! is_array($payload)) {
-                $hadInvalidPayload = true;
-                continue;
-            }
-
-            $variants[] = $payload;
-        }
-
-        if ($throwOnFailure && $variants === []) {
-            if ($lastErrorResponse instanceof Response) {
+        if (!$response->successful()) {
+            if ($throwOnFailure) {
                 throw new \RuntimeException(
-                    $this->httpErrorMessage('Failed to fetch Instagram profile.', $lastErrorResponse)
+                    $this->httpErrorMessage('Failed to fetch Instagram profile.', $response)
                 );
             }
 
-            if ($hadInvalidPayload) {
+            return null;
+        }
+
+        $payload = $response->json();
+
+        if (!is_array($payload)) {
+            if ($throwOnFailure) {
                 throw new \RuntimeException('Invalid Instagram profile response.');
             }
 
-            throw new \RuntimeException('Failed to fetch Instagram profile.');
+            return null;
         }
 
-        return $variants;
+        return $payload;
     }
 
     private function extractReceiverIdCandidates(array $profiles, string $oauthUserId): array
     {
         $candidates = [];
-        $order = 0;
-
-        $registerCandidate = static function (array &$buffer, string $value, int $sourcePriority, int $order): void {
-            $normalized = trim($value);
-            if ($normalized === '') {
-                return;
-            }
-
-            $score = $sourcePriority;
-
-            if (str_starts_with($normalized, '178')) {
-                $score += 100;
-            }
-
-            if (ctype_digit($normalized)) {
-                $score += 20;
-            }
-
-            if (strlen($normalized) >= 12) {
-                $score += 10;
-            }
-
-            if (! array_key_exists($normalized, $buffer)) {
-                $buffer[$normalized] = [
-                    'id' => $normalized,
-                    'score' => $score,
-                    'order' => $order,
-                ];
-
-                return;
-            }
-
-            $buffer[$normalized]['score'] = max((int) $buffer[$normalized]['score'], $score);
-            $buffer[$normalized]['order'] = min((int) $buffer[$normalized]['order'], $order);
-        };
 
         foreach ($profiles as $profile) {
-            if (! is_array($profile)) {
+            if (!is_array($profile)) {
                 continue;
             }
 
-            $registerCandidate($candidates, (string) ($profile['id'] ?? ''), 300, $order);
-            $order += 1;
-            $registerCandidate($candidates, (string) ($profile['user_id'] ?? ''), 200, $order);
-            $order += 1;
-        }
+            $profileId = trim((string) ($profile['id'] ?? ''));
+            $profileUserId = trim((string) ($profile['user_id'] ?? ''));
 
-        $registerCandidate($candidates, $oauthUserId, 100, $order);
-
-        $normalizedCandidates = array_values($candidates);
-        usort($normalizedCandidates, static function (array $left, array $right): int {
-            $scoreComparison = ((int) ($right['score'] ?? 0)) <=> ((int) ($left['score'] ?? 0));
-
-            if ($scoreComparison !== 0) {
-                return $scoreComparison;
+            if ($profileId !== '') {
+                $candidates[] = $profileId;
             }
 
-            return ((int) ($left['order'] ?? 0)) <=> ((int) ($right['order'] ?? 0));
+            if ($profileUserId !== '') {
+                $candidates[] = $profileUserId;
+            }
+        }
+
+        $normalizedOauthId = trim($oauthUserId);
+        if ($normalizedOauthId !== '') {
+            $candidates[] = $normalizedOauthId;
+        }
+
+        $candidates = array_values(array_unique(array_filter($candidates, static fn(string $value): bool => $value !== '')));
+
+        usort($candidates, static function (string $left, string $right): int {
+            $score = static function (string $value): int {
+                $result = 0;
+
+                if (str_starts_with($value, '178')) {
+                    $result += 100;
+                }
+
+                if (ctype_digit($value)) {
+                    $result += 20;
+                }
+
+                if (strlen($value) >= 12) {
+                    $result += 10;
+                }
+
+                return $result;
+            };
+
+            return $score($right) <=> $score($left);
         });
 
-        return array_values(array_map(
-            static fn (array $item): string => (string) ($item['id'] ?? ''),
-            array_filter($normalizedCandidates, static fn (array $item): bool => trim((string) ($item['id'] ?? '')) !== '')
-        ));
+        return $candidates;
     }
 
     private function firstNonEmptyString(array $values): ?string
@@ -799,7 +758,7 @@ class InstagramIntegrationController extends Controller
         }
 
         $payload = Cache::pull($this->stateCacheKey($state));
-        if (! is_array($payload)) {
+        if (!is_array($payload)) {
             return null;
         }
 
@@ -829,12 +788,12 @@ class InstagramIntegrationController extends Controller
         $fallback = 'http://localhost:5173/integrations';
         $normalized = trim($candidate);
 
-        if ($normalized === '' || ! filter_var($normalized, FILTER_VALIDATE_URL)) {
+        if ($normalized === '' || !filter_var($normalized, FILTER_VALIDATE_URL)) {
             return $fallback;
         }
 
         $scheme = (string) parse_url($normalized, PHP_URL_SCHEME);
-        if (! in_array(Str::lower($scheme), ['http', 'https'], true)) {
+        if (!in_array(Str::lower($scheme), ['http', 'https'], true)) {
             return $fallback;
         }
 
@@ -845,7 +804,7 @@ class InstagramIntegrationController extends Controller
     {
         $parsed = parse_url($url);
 
-        if ($parsed === false || ! isset($parsed['scheme'], $parsed['host'])) {
+        if ($parsed === false || !isset($parsed['scheme'], $parsed['host'])) {
             return $url;
         }
 
@@ -854,7 +813,7 @@ class InstagramIntegrationController extends Controller
 
         $filteredParams = array_filter(
             $params,
-            static fn (mixed $value): bool => $value !== null && $value !== ''
+            static fn(mixed $value): bool => $value !== null && $value !== ''
         );
 
         $query = http_build_query(
@@ -879,7 +838,7 @@ class InstagramIntegrationController extends Controller
         int $userId,
         string $instagramUserId
     ): array {
-        if (! is_string($profilePictureUrl) || trim($profilePictureUrl) === '') {
+        if (!is_string($profilePictureUrl) || trim($profilePictureUrl) === '') {
             return [$existingPath, $this->resolveAvatarPublicUrl($existingPath)];
         }
 
@@ -895,12 +854,12 @@ class InstagramIntegrationController extends Controller
 
         try {
             $response = Http::timeout(15)->get($profilePictureUrl);
-            if (! $response->successful()) {
+            if (!$response->successful()) {
                 return [$existingPath, $this->resolveAvatarPublicUrl($existingPath)];
             }
 
             $contentType = Str::lower(trim((string) $response->header('Content-Type', '')));
-            if (! Str::startsWith($contentType, 'image/')) {
+            if (!Str::startsWith($contentType, 'image/')) {
                 return [$existingPath, $this->resolveAvatarPublicUrl($existingPath)];
             }
 
@@ -922,7 +881,7 @@ class InstagramIntegrationController extends Controller
 
     private function resolveAvatarPublicUrl(?string $path, string $disk = 'public'): ?string
     {
-        if (! is_string($path) || trim($path) === '') {
+        if (!is_string($path) || trim($path) === '') {
             return null;
         }
 
@@ -947,7 +906,7 @@ class InstagramIntegrationController extends Controller
 
     private function nullableTrimmedString(mixed $value): ?string
     {
-        if (! is_string($value)) {
+        if (!is_string($value)) {
             return null;
         }
 
@@ -977,25 +936,25 @@ class InstagramIntegrationController extends Controller
         $apiError = $this->extractInstagramApiErrorMessage($response->json());
 
         if ($apiError !== null) {
-            return $prefix.' '.$apiError;
+            return $prefix . ' ' . $apiError;
         }
 
         $rawBody = trim($response->body());
         if ($rawBody !== '') {
-            return $prefix.' '.Str::limit($rawBody, 200);
+            return $prefix . ' ' . Str::limit($rawBody, 200);
         }
 
-        return $prefix.' HTTP '.$response->status().'.';
+        return $prefix . ' HTTP ' . $response->status() . '.';
     }
 
     private function extractInstagramApiErrorMessage(mixed $payload): ?string
     {
-        if (! is_array($payload)) {
+        if (!is_array($payload)) {
             return null;
         }
 
         $errorMessage = $payload['error']['message'] ?? $payload['message'] ?? null;
-        if (! is_string($errorMessage)) {
+        if (!is_string($errorMessage)) {
             return null;
         }
 
