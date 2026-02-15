@@ -18,6 +18,8 @@ uses(RefreshDatabase::class);
 
 function telegramWebhookContext(string $subscriptionStatus = CompanySubscription::STATUS_ACTIVE): array
 {
+    config()->set('services.telegram.resolve_customer_profile', false);
+
     $user = User::factory()->create([
         'status' => true,
         'email_verified_at' => now(),
@@ -283,6 +285,63 @@ test('telegram webhook stores inbound message without assistant reply when chann
         'chat_id' => $chat->id,
         'sender_type' => ChatMessage::SENDER_ASSISTANT,
     ]);
+});
+
+test('telegram webhook resolves customer avatar and stores profile snapshot in chat metadata', function () {
+    [, $company, , $assistantChannel] = telegramWebhookContext();
+
+    config()->set('services.telegram.bot_api_base', 'https://api.telegram.org');
+    config()->set('services.telegram.auto_reply_enabled', false);
+    config()->set('services.telegram.resolve_customer_profile', true);
+    config()->set('services.telegram.customer_profile_refresh_minutes', 1440);
+
+    Http::fake([
+        'https://api.telegram.org/bottelegram-token/getUserProfilePhotos' => Http::response([
+            'ok' => true,
+            'result' => [
+                'total_count' => 1,
+                'photos' => [
+                    [
+                        ['file_id' => 'photo-small', 'width' => 90, 'height' => 90],
+                        ['file_id' => 'photo-large', 'width' => 640, 'height' => 640],
+                    ],
+                ],
+            ],
+        ], 200),
+        'https://api.telegram.org/bottelegram-token/getFile' => Http::response([
+            'ok' => true,
+            'result' => [
+                'file_path' => 'photos/profile-3001.jpg',
+            ],
+        ], 200),
+    ]);
+
+    $this
+        ->withHeader('X-Telegram-Bot-Api-Secret-Token', 'tg-secret-123')
+        ->postJson('/api/integrations/telegram/webhook/'.$assistantChannel->id, telegramWebhookPayload([
+            'message_id' => 1010,
+            'text' => 'hello',
+        ]))
+        ->assertOk()
+        ->assertJsonPath('ok', true);
+
+    $chat = Chat::query()
+        ->where('company_id', $company->id)
+        ->where('channel', 'telegram')
+        ->firstOrFail();
+
+    expect((string) $chat->name)->toBe('Abdu');
+    expect((string) $chat->avatar)->toBe('https://api.telegram.org/file/bottelegram-token/photos/profile-3001.jpg');
+    expect((string) data_get($chat->metadata, 'telegram.customer_profile.name'))->toBe('Abdu');
+    expect((string) data_get($chat->metadata, 'telegram.customer_profile.username'))->toBe('abdu');
+    expect((string) data_get($chat->metadata, 'telegram.customer_profile.avatar'))
+        ->toBe('https://api.telegram.org/file/bottelegram-token/photos/profile-3001.jpg');
+
+    Http::assertSent(function ($request): bool {
+        return $request->method() === 'POST'
+            && $request->url() === 'https://api.telegram.org/bottelegram-token/getUserProfilePhotos'
+            && (string) ($request['user_id'] ?? '') === '3001';
+    });
 });
 
 test('telegram webhook appends repeated message id into same chat', function () {

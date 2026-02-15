@@ -202,6 +202,42 @@ class TelegramMainWebhookService
         $chatInfo = is_array($event['chat'] ?? null) ? $event['chat'] : [];
         $existingMetadata = is_array($chat->metadata) ? $chat->metadata : [];
         $channelCredentials = is_array($assistantChannel->credentials) ? $assistantChannel->credentials : [];
+        $displayName = $this->extractChatDisplayName($event);
+        $currentName = trim((string) ($chat->name ?? ''));
+        $avatarUrl = is_string($chat->avatar) ? trim((string) $chat->avatar) : '';
+        $profileSnapshot = null;
+
+        if ($this->shouldResolveCustomerProfileForChat($chat, $existingMetadata, $senderId)) {
+            $profile = $this->fetchTelegramCustomerProfile($assistantChannel, $event, $senderId);
+            $resolvedProfileName = trim((string) ($profile['name'] ?? ''));
+
+            if (
+                $displayName === null
+                && $resolvedProfileName !== ''
+                && ($chat->exists === false || $this->shouldReplaceChatNameWithProfileName($currentName, $senderId))
+            ) {
+                $displayName = Str::limit($resolvedProfileName, 160, '');
+            }
+
+            $candidateAvatar = trim((string) ($profile['avatar'] ?? ''));
+            if ($candidateAvatar !== '') {
+                $avatarUrl = $candidateAvatar;
+            }
+
+            if (
+                ($profile['name'] ?? null) !== null
+                || ($profile['username'] ?? null) !== null
+                || ($profile['avatar'] ?? null) !== null
+            ) {
+                $profileSnapshot = array_filter([
+                    'name' => $profile['name'] ?? null,
+                    'username' => $profile['username'] ?? null,
+                    'avatar' => $profile['avatar'] ?? null,
+                    'resolved_at' => now()->toIso8601String(),
+                ], static fn (mixed $value): bool => $value !== null && $value !== '');
+            }
+        }
+
         $incomingMetadata = [
             'source' => 'telegram_webhook',
             'telegram' => array_filter([
@@ -213,13 +249,17 @@ class TelegramMainWebhookService
             ], static fn (mixed $value): bool => $value !== null && $value !== ''),
         ];
 
+        if (is_array($profileSnapshot) && $profileSnapshot !== []) {
+            $incomingMetadata['telegram']['customer_profile'] = $profileSnapshot;
+        }
+
         $chat->fill([
             'user_id' => $company->user_id,
             'assistant_id' => $assistant?->id ?? $chat->assistant_id,
             'assistant_channel_id' => $assistantChannel->id,
             'channel_user_id' => $senderId,
-            'name' => $this->extractChatDisplayName($event) ?? $chat->name ?? ('Telegram '.$senderId),
-            'avatar' => $chat->avatar,
+            'name' => $displayName ?? $chat->name ?? ('Telegram '.$senderId),
+            'avatar' => $avatarUrl !== '' ? Str::limit($avatarUrl, 2048, '') : null,
             'status' => $chat->status ?: Chat::STATUS_OPEN,
             'metadata' => array_replace_recursive($existingMetadata, $incomingMetadata),
         ]);
@@ -254,6 +294,130 @@ class TelegramMainWebhookService
         }
 
         return Str::limit($name, 160, '');
+    }
+
+    private function shouldResolveCustomerProfileForChat(Chat $chat, array $existingMetadata, string $senderId): bool
+    {
+        if (! (bool) config('services.telegram.resolve_customer_profile', true)) {
+            return false;
+        }
+
+        if (! $chat->exists) {
+            return true;
+        }
+
+        $currentName = trim((string) ($chat->name ?? ''));
+        if ($this->shouldReplaceChatNameWithProfileName($currentName, $senderId)) {
+            return true;
+        }
+
+        $currentAvatar = trim((string) ($chat->avatar ?? ''));
+        if ($currentAvatar === '') {
+            return true;
+        }
+
+        return $this->isCustomerProfileSnapshotStale($existingMetadata);
+    }
+
+    private function shouldReplaceChatNameWithProfileName(string $currentName, string $senderId): bool
+    {
+        $normalizedCurrentName = trim($currentName);
+        if ($normalizedCurrentName === '') {
+            return true;
+        }
+
+        $normalizedSenderId = trim($senderId);
+        if ($normalizedSenderId === '') {
+            return false;
+        }
+
+        if ($normalizedCurrentName === $normalizedSenderId) {
+            return true;
+        }
+
+        return Str::lower($normalizedCurrentName) === Str::lower('Telegram '.$normalizedSenderId);
+    }
+
+    private function isCustomerProfileSnapshotStale(array $existingMetadata): bool
+    {
+        $resolvedAt = trim((string) data_get($existingMetadata, 'telegram.customer_profile.resolved_at', ''));
+        if ($resolvedAt === '') {
+            return true;
+        }
+
+        try {
+            $resolvedAtCarbon = Carbon::parse($resolvedAt);
+        } catch (Throwable) {
+            return true;
+        }
+
+        $refreshMinutes = max((int) config('services.telegram.customer_profile_refresh_minutes', 1440), 1);
+
+        return $resolvedAtCarbon->lte(now()->subMinutes($refreshMinutes));
+    }
+
+    private function fetchTelegramCustomerProfile(
+        AssistantChannel $assistantChannel,
+        array $event,
+        string $senderId,
+    ): array {
+        $from = is_array($event['from'] ?? null) ? $event['from'] : [];
+        $chat = is_array($event['chat'] ?? null) ? $event['chat'] : [];
+
+        $firstName = trim((string) ($from['first_name'] ?? $chat['first_name'] ?? ''));
+        $lastName = trim((string) ($from['last_name'] ?? $chat['last_name'] ?? ''));
+        $username = trim((string) ($from['username'] ?? $chat['username'] ?? ''));
+
+        $name = trim($firstName.' '.$lastName);
+        if ($name === '' && $username !== '') {
+            $name = '@'.$username;
+        }
+
+        $profile = array_filter([
+            'name' => $name !== '' ? Str::limit($name, 160, '') : null,
+            'username' => $username !== '' ? Str::limit($username, 160, '') : null,
+        ], static fn (mixed $value): bool => $value !== null && $value !== '');
+
+        $credentials = is_array($assistantChannel->credentials) ? $assistantChannel->credentials : [];
+        $botToken = trim((string) ($credentials['bot_token'] ?? ''));
+        $normalizedSenderId = trim($senderId);
+
+        if ($botToken === '' || $normalizedSenderId === '') {
+            return $profile;
+        }
+
+        try {
+            $photos = $this->telegramBotApiService->getUserProfilePhotos(
+                $botToken,
+                $normalizedSenderId,
+                0,
+                1,
+            );
+
+            $photoSets = is_array($photos['photos'] ?? null) ? $photos['photos'] : [];
+            $firstSet = is_array($photoSets[0] ?? null) ? $photoSets[0] : [];
+            $bestPhoto = is_array($firstSet[array_key_last($firstSet)] ?? null)
+                ? $firstSet[array_key_last($firstSet)]
+                : [];
+            $fileId = trim((string) ($bestPhoto['file_id'] ?? ''));
+
+            if ($fileId !== '') {
+                $file = $this->telegramBotApiService->getFile($botToken, $fileId);
+                $filePath = trim((string) ($file['file_path'] ?? ''));
+
+                if ($filePath !== '') {
+                    $profile['avatar'] = Str::limit(
+                        $this->telegramBotApiService->resolveDownloadUrl($botToken, $filePath),
+                        2048,
+                        '',
+                    );
+                }
+            }
+        } catch (Throwable) {
+            // Ignore profile photo fetch errors to avoid blocking webhook processing.
+        }
+
+        return $profile;
     }
 
     private function normalizeInboundParts(

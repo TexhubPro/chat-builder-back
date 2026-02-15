@@ -52,6 +52,8 @@ return [
         'webhook_url' => env('TELEGRAM_WEBHOOK_URL'),
         'webhook_secret_header' => env('TELEGRAM_WEBHOOK_SECRET_HEADER', 'X-Telegram-Bot-Api-Secret-Token'),
         'auto_reply_enabled' => filter_var(env('TELEGRAM_AUTO_REPLY_ENABLED', true), FILTER_VALIDATE_BOOL),
+        'resolve_customer_profile' => filter_var(env('TELEGRAM_RESOLVE_CUSTOMER_PROFILE', true), FILTER_VALIDATE_BOOL),
+        'customer_profile_refresh_minutes' => env('TELEGRAM_CUSTOMER_PROFILE_REFRESH_MINUTES', 1440),
     ],
 
 ];

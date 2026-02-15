@@ -62,6 +62,32 @@ class TelegramBotApiService
         return $result;
     }
 
+    public function getUserProfilePhotos(
+        string $botToken,
+        string|int $userId,
+        int $offset = 0,
+        int $limit = 1,
+    ): array {
+        $normalizedUserId = trim((string) $userId);
+
+        if ($normalizedUserId === '') {
+            throw new \RuntimeException('Telegram user id is missing.');
+        }
+
+        $payload = $this->request($botToken, 'getUserProfilePhotos', [
+            'user_id' => $normalizedUserId,
+            'offset' => max($offset, 0),
+            'limit' => max(min($limit, 100), 1),
+        ]);
+        $result = $payload['result'] ?? null;
+
+        if (! is_array($result)) {
+            throw new \RuntimeException('Telegram getUserProfilePhotos response is invalid.');
+        }
+
+        return $result;
+    }
+
     public function deleteWebhook(
         string $botToken,
         bool $dropPendingUpdates = false,
