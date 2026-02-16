@@ -195,7 +195,7 @@
     wrapper.style.bottom = "16px";
     wrapper.style.right = "16px";
     wrapper.style.left = "auto";
-    wrapper.style.zIndex = "2147483000";
+    wrapper.style.zIndex = "2147483647";
     wrapper.style.display = "flex";
     wrapper.style.flexDirection = "column";
     wrapper.style.alignItems = "flex-end";
@@ -204,10 +204,10 @@
     var panel = document.createElement("div");
     panel.className = "texhub-widget-panel hidden";
     panel.style.display = "none";
-    panel.style.width = "min(360px,calc(100vw - 24px))";
-    panel.style.height = "min(560px,calc(100vh - 100px))";
+    panel.style.width = "min(420px,calc(100vw - 24px))";
+    panel.style.height = "min(760px,calc(100vh - 24px))";
     panel.style.border = "1px solid rgba(148,163,184,.35)";
-    panel.style.borderRadius = "18px";
+    panel.style.borderRadius = "24px";
     panel.style.overflow = "hidden";
     panel.style.boxShadow = "0 24px 60px rgba(15,23,42,.24)";
     panel.style.background = "#fff";
@@ -446,13 +446,13 @@
 
     ui.wrapper.classList.remove("left", "right");
     ui.wrapper.classList.add(position);
-    ui.wrapper.style.bottom = "20px";
+    ui.wrapper.style.bottom = "16px";
     if (position === "left") {
-      ui.wrapper.style.left = "20px";
+      ui.wrapper.style.left = "16px";
       ui.wrapper.style.right = "auto";
       ui.wrapper.style.alignItems = "flex-start";
     } else {
-      ui.wrapper.style.right = "20px";
+      ui.wrapper.style.right = "16px";
       ui.wrapper.style.left = "auto";
       ui.wrapper.style.alignItems = "flex-end";
     }
