@@ -688,14 +688,25 @@ class InstagramMainWebhookService
         InstagramIntegration $integration,
     ): InstagramIntegration {
         $expiresAt = $integration->token_expires_at;
+        $refreshGraceSeconds = max((int) config('meta.instagram.token_refresh_grace_seconds', 900), 0);
+
         if (! $expiresAt instanceof Carbon) {
+            $cacheKey = 'instagram:profile-token-refresh-attempt:'.(int) $integration->id;
+            $cooldownMinutes = max((int) config('meta.instagram.profile_token_refresh_cooldown_minutes', 360), 1);
+
+            if (Cache::has($cacheKey)) {
+                return $integration;
+            }
+
+            Cache::put($cacheKey, true, now()->addMinutes($cooldownMinutes));
+        } elseif ($expiresAt->gt(now()->addSeconds($refreshGraceSeconds))) {
             return $integration;
         }
 
         try {
             return $this->instagramTokenService->ensureTokenIsFresh(
                 $integration,
-                max((int) config('meta.instagram.token_refresh_grace_seconds', 900), 0),
+                $refreshGraceSeconds,
             );
         } catch (Throwable) {
             return $integration;

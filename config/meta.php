@@ -21,6 +21,7 @@ return [
         'subscribe_after_connect' => env('META_INSTAGRAM_SUBSCRIBE_AFTER_CONNECT', true),
         'subscribed_fields' => env('META_INSTAGRAM_SUBSCRIBED_FIELDS', 'messages'),
         'token_refresh_grace_seconds' => env('META_INSTAGRAM_TOKEN_REFRESH_GRACE_SECONDS', 900),
+        'profile_token_refresh_cooldown_minutes' => env('META_INSTAGRAM_PROFILE_TOKEN_REFRESH_COOLDOWN_MINUTES', 360),
         'auto_reply_enabled' => env('META_INSTAGRAM_AUTO_REPLY_ENABLED', true),
         'voice_reply_for_audio' => env('META_INSTAGRAM_VOICE_REPLY_FOR_AUDIO', true),
         'resolve_customer_profile' => env('META_INSTAGRAM_RESOLVE_CUSTOMER_PROFILE', true),

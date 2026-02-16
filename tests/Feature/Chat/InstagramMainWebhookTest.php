@@ -732,6 +732,223 @@ test('instagram main webhook refreshes existing placeholder chat name and avatar
         ->toBe('https://cdn.example.com/avatars/real-customer.jpg');
 });
 
+test('instagram main webhook retries instagram profile request with fallback field sets', function () {
+    [, $company] = instagramWebhookContext();
+
+    config()->set('meta.instagram.auto_reply_enabled', false);
+    config()->set('meta.instagram.resolve_customer_profile', true);
+    config()->set('meta.instagram.graph_base', 'https://graph.instagram.com');
+    config()->set('meta.instagram.api_version', 'v23.0');
+
+    Http::fake(function ($request) {
+        $url = $request->url();
+
+        if (! str_starts_with($url, 'https://graph.instagram.com/v23.0/customer-1001')) {
+            return Http::response([], 404);
+        }
+
+        $fields = trim((string) ($request['fields'] ?? ''));
+        if ($fields === 'name,username,profile_pic,profile_picture_url') {
+            return Http::response([
+                'error' => [
+                    'message' => '(#100) Tried accessing nonexisting field (profile_pic)',
+                    'type' => 'OAuthException',
+                    'code' => 100,
+                ],
+            ], 400);
+        }
+
+        if ($fields === 'name,username,profile_picture_url') {
+            return Http::response([
+                'username' => 'customer.ig',
+                'profile_picture_url' => 'https://cdn.example.com/avatars/customer-fallback.jpg',
+            ], 200);
+        }
+
+        return Http::response([
+            'error' => [
+                'message' => 'Invalid field list',
+                'type' => 'OAuthException',
+                'code' => 100,
+            ],
+        ], 400);
+    });
+
+    InstagramFacade::shouldReceive('sendTextMessage')->never();
+    InstagramFacade::shouldReceive('sendMediaMessage')->never();
+
+    $response = $this->postJson('/instagram-main-webhook', instagramMainWebhookPayload([
+        'mid' => 'in_mid_profile_fallback_fields_1',
+        'text' => 'салом',
+    ]));
+
+    $response->assertOk()->assertJsonPath('ok', true);
+
+    $chat = Chat::query()
+        ->where('company_id', $company->id)
+        ->where('channel', 'instagram')
+        ->firstOrFail();
+
+    expect((string) $chat->name)->toBe('customer.ig');
+    expect((string) $chat->avatar)->toBe('https://cdn.example.com/avatars/customer-fallback.jpg');
+    expect((string) data_get($chat->metadata, 'instagram.customer_profile.username'))->toBe('customer.ig');
+
+    Http::assertSent(function ($request): bool {
+        return $request->method() === 'GET'
+            && str_starts_with($request->url(), 'https://graph.instagram.com/v23.0/customer-1001')
+            && (string) ($request['fields'] ?? '') === 'name,username,profile_pic,profile_picture_url';
+    });
+
+    Http::assertSent(function ($request): bool {
+        return $request->method() === 'GET'
+            && str_starts_with($request->url(), 'https://graph.instagram.com/v23.0/customer-1001')
+            && (string) ($request['fields'] ?? '') === 'name,username,profile_picture_url';
+    });
+});
+
+test('instagram main webhook refreshes expiring token before customer profile lookup', function () {
+    [, $company, , $integration] = instagramWebhookContext();
+
+    config()->set('meta.instagram.auto_reply_enabled', false);
+    config()->set('meta.instagram.resolve_customer_profile', true);
+    config()->set('meta.instagram.graph_base', 'https://graph.instagram.com');
+    config()->set('meta.instagram.api_version', 'v23.0');
+    config()->set('meta.instagram.token_refresh_grace_seconds', 900);
+
+    $integration->forceFill([
+        'access_token' => 'expired-token',
+        'token_expires_at' => now()->subMinutes(10),
+    ])->save();
+
+    Http::fake(function ($request) {
+        $url = $request->url();
+
+        if (str_starts_with($url, 'https://graph.instagram.com/refresh_access_token')) {
+            return Http::response([
+                'access_token' => 'fresh-token',
+                'expires_in' => 5184000,
+            ], 200);
+        }
+
+        if (str_starts_with($url, 'https://graph.instagram.com/v23.0/customer-1001')) {
+            if ((string) ($request['access_token'] ?? '') !== 'fresh-token') {
+                return Http::response([
+                    'error' => [
+                        'message' => 'Error validating access token',
+                        'type' => 'OAuthException',
+                        'code' => 190,
+                    ],
+                ], 401);
+            }
+
+            return Http::response([
+                'name' => 'Fresh Token User',
+                'username' => 'fresh.token.user',
+                'profile_picture_url' => 'https://cdn.example.com/avatars/fresh-token-user.jpg',
+            ], 200);
+        }
+
+        return Http::response([], 404);
+    });
+
+    InstagramFacade::shouldReceive('sendTextMessage')->never();
+    InstagramFacade::shouldReceive('sendMediaMessage')->never();
+
+    $response = $this->postJson('/instagram-main-webhook', instagramMainWebhookPayload([
+        'mid' => 'in_mid_profile_refresh_token_1',
+        'text' => 'привет',
+    ]));
+
+    $response->assertOk()->assertJsonPath('ok', true);
+
+    $integration->refresh();
+    expect((string) $integration->access_token)->toBe('fresh-token');
+    expect($integration->token_expires_at)->not->toBeNull();
+
+    $chat = Chat::query()
+        ->where('company_id', $company->id)
+        ->where('channel', 'instagram')
+        ->firstOrFail();
+
+    expect((string) $chat->name)->toBe('Fresh Token User');
+    expect((string) $chat->avatar)->toBe('https://cdn.example.com/avatars/fresh-token-user.jpg');
+
+    Http::assertSent(function ($request): bool {
+        return $request->method() === 'GET'
+            && str_starts_with($request->url(), 'https://graph.instagram.com/refresh_access_token')
+            && (string) ($request['grant_type'] ?? '') === 'ig_refresh_token'
+            && (string) ($request['access_token'] ?? '') === 'expired-token';
+    });
+});
+
+test('instagram main webhook refreshes token for profile lookup when token expiry is missing', function () {
+    [, $company, , $integration] = instagramWebhookContext();
+
+    config()->set('meta.instagram.auto_reply_enabled', false);
+    config()->set('meta.instagram.resolve_customer_profile', true);
+    config()->set('meta.instagram.graph_base', 'https://graph.instagram.com');
+    config()->set('meta.instagram.api_version', 'v23.0');
+    config()->set('meta.instagram.token_refresh_grace_seconds', 900);
+    config()->set('meta.instagram.profile_token_refresh_cooldown_minutes', 360);
+
+    $integration->forceFill([
+        'access_token' => 'missing-expiry-token',
+        'token_expires_at' => null,
+    ])->save();
+
+    Http::fake(function ($request) {
+        $url = $request->url();
+
+        if (str_starts_with($url, 'https://graph.instagram.com/refresh_access_token')) {
+            return Http::response([
+                'access_token' => 'fresh-token-without-expiry',
+                'expires_in' => 5184000,
+            ], 200);
+        }
+
+        if (str_starts_with($url, 'https://graph.instagram.com/v23.0/customer-1001')) {
+            if ((string) ($request['access_token'] ?? '') !== 'fresh-token-without-expiry') {
+                return Http::response([
+                    'error' => [
+                        'message' => 'Error validating access token',
+                        'type' => 'OAuthException',
+                        'code' => 190,
+                    ],
+                ], 401);
+            }
+
+            return Http::response([
+                'username' => 'without.expiry.user',
+                'profile_picture_url' => 'https://cdn.example.com/avatars/without-expiry-user.jpg',
+            ], 200);
+        }
+
+        return Http::response([], 404);
+    });
+
+    InstagramFacade::shouldReceive('sendTextMessage')->never();
+    InstagramFacade::shouldReceive('sendMediaMessage')->never();
+
+    $response = $this->postJson('/instagram-main-webhook', instagramMainWebhookPayload([
+        'mid' => 'in_mid_profile_refresh_missing_expiry_1',
+        'text' => 'hello',
+    ]));
+
+    $response->assertOk()->assertJsonPath('ok', true);
+
+    $integration->refresh();
+    expect((string) $integration->access_token)->toBe('fresh-token-without-expiry');
+    expect($integration->token_expires_at)->not->toBeNull();
+
+    $chat = Chat::query()
+        ->where('company_id', $company->id)
+        ->where('channel', 'instagram')
+        ->firstOrFail();
+
+    expect((string) $chat->name)->toBe('without.expiry.user');
+    expect((string) $chat->avatar)->toBe('https://cdn.example.com/avatars/without-expiry-user.jpg');
+});
+
 test('instagram main webhook appends repeated mid messages into same chat', function () {
     [, $company] = instagramWebhookContext();
 
