@@ -16,6 +16,13 @@
     return;
   }
 
+  var debugFromAttribute = parseBooleanFlag(script.getAttribute("data-debug"));
+  var debugFromQuery = /(?:\?|&)widget_debug=1(?:&|$)/.test(window.location.search || "");
+  var debugEnabled = debugFromAttribute || debugFromQuery;
+  var diagnosticsStore = window.__texhubWidgetDiagnostics || (window.__texhubWidgetDiagnostics = {});
+  var diagnostics = diagnosticsStore[widgetKey] || {};
+  diagnosticsStore[widgetKey] = diagnostics;
+
   var customApiBase = (script.getAttribute("data-api-base") || "").trim();
   var scriptUrl = script.getAttribute("src") || "";
   var scriptOrigin = "";
@@ -29,6 +36,13 @@
   var apiBase = customApiBase || scriptOrigin + "/api/widget";
   var storageSessionKey = "texhub_widget_session_" + widgetKey;
   var storageOpenStateKey = "texhub_widget_open_" + widgetKey;
+  document.documentElement.setAttribute("data-texhub-widget-loaded", "1");
+  debugLog("script_loaded", {
+    widget_key: widgetKey,
+    script_origin: scriptOrigin,
+    api_base: apiBase,
+    debug_enabled: debugEnabled
+  });
 
   var state = {
     sessionId: loadOrCreateSessionId(),
@@ -59,6 +73,10 @@
   bindUi();
   applyConfigToUi();
   togglePanel(state.isOpen);
+  debugLog("ui_ready", {
+    is_open: state.isOpen,
+    session_id: state.sessionId
+  });
 
   bootstrap();
 
@@ -71,9 +89,13 @@
 
     fetchConfig()
       .then(function () {
+        debugLog("bootstrap_config_loaded");
         return fetchMessages();
       })
       .catch(function (error) {
+        debugLog("bootstrap_failed", {
+          error: serializeError(error)
+        });
         console.warn("Widget init failed", error);
       })
       .finally(function () {
@@ -88,9 +110,12 @@
     }
 
     var generated = "ws_" + randomId(28);
-    localStorage.setItem(storageSessionKey, generated);
-    return generated;
-  }
+      localStorage.setItem(storageSessionKey, generated);
+      debugLog("session_created", {
+        session_id: generated
+      });
+      return generated;
+    }
 
   function randomId(length) {
     var chars = "abcdefghijklmnopqrstuvwxyz0123456789";
@@ -284,6 +309,9 @@
 
   function togglePanel(open) {
     state.isOpen = !!open;
+    debugLog("panel_toggled", {
+      is_open: state.isOpen
+    });
 
     if (state.isOpen) {
       ui.panel.classList.remove("hidden");
@@ -299,19 +327,21 @@
   }
 
   function fetchConfig() {
+    debugLog("config_fetch_start");
     return fetch(apiBase + "/" + encodeURIComponent(widgetKey) + "/config", {
       method: "GET",
       mode: "cors"
     })
       .then(function (response) {
         if (!response.ok) {
-          throw new Error("Config request failed");
+          throw httpError("Config request failed", response.status);
         }
 
         return response.json();
       })
       .then(function (data) {
         if (!data || !data.widget) {
+          debugLog("config_invalid_payload");
           return;
         }
 
@@ -321,8 +351,14 @@
         }
 
         applyConfigToUi();
+        debugLog("config_fetch_success", {
+          is_active: !!state.config.is_active
+        });
       })
       .catch(function (error) {
+        debugLog("config_fetch_failed", {
+          error: serializeError(error)
+        });
         console.warn("Widget config load failed", error);
       });
   }
@@ -379,6 +415,9 @@
     }
 
     state.loading = true;
+    debugLog("messages_fetch_start", {
+      after_id: state.lastId || 0
+    });
 
     var url =
       apiBase +
@@ -396,7 +435,7 @@
     })
       .then(function (response) {
         if (!response.ok) {
-          throw new Error("Messages request failed");
+          throw httpError("Messages request failed", response.status);
         }
 
         return response.json();
@@ -406,8 +445,15 @@
         if (items.length > 0) {
           pushMessages(items);
         }
+
+        debugLog("messages_fetch_success", {
+          count: items.length
+        });
       })
       .catch(function (error) {
+        debugLog("messages_fetch_failed", {
+          error: serializeError(error)
+        });
         console.warn("Widget messages load failed", error);
       })
       .finally(function () {
@@ -531,6 +577,10 @@
 
     state.sending = true;
     ui.send.disabled = true;
+    debugLog("send_start", {
+      has_text: text !== "",
+      has_file: !!file
+    });
 
     fetch(apiBase + "/" + encodeURIComponent(widgetKey) + "/messages", {
       method: "POST",
@@ -539,7 +589,7 @@
     })
       .then(function (response) {
         if (!response.ok) {
-          throw new Error("Send message failed");
+          throw httpError("Send message failed", response.status);
         }
 
         return response.json();
@@ -558,8 +608,16 @@
         state.fileToSend = null;
         ui.fileName.style.display = "none";
         ui.fileName.textContent = "";
+
+        debugLog("send_success", {
+          has_chat_message: !!(data && data.chat_message),
+          has_assistant_message: !!(data && data.assistant_message)
+        });
       })
       .catch(function (error) {
+        debugLog("send_failed", {
+          error: serializeError(error)
+        });
         console.warn("Widget send failed", error);
       })
       .finally(function () {
@@ -574,8 +632,77 @@
       return;
     }
 
+    debugLog("polling_started");
     state.pollTimer = window.setInterval(function () {
       fetchMessages();
     }, 3500);
+  }
+
+  function parseBooleanFlag(value) {
+    var normalized = String(value || "").trim().toLowerCase();
+    return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+  }
+
+  function httpError(message, status) {
+    var error = new Error(message);
+    error.status = status;
+    return error;
+  }
+
+  function serializeError(error) {
+    if (!error) {
+      return { message: "Unknown error" };
+    }
+
+    return {
+      message: String(error.message || "Unknown error"),
+      status: typeof error.status === "number" ? error.status : null
+    };
+  }
+
+  function updateDiagnostics(stage, details) {
+    diagnostics.widget_key = widgetKey;
+    diagnostics.stage = stage;
+    diagnostics.api_base = apiBase;
+    diagnostics.script_origin = scriptOrigin;
+    diagnostics.session_id = state && state.sessionId ? state.sessionId : null;
+    diagnostics.timestamp = new Date().toISOString();
+
+    if (details && typeof details === "object") {
+      diagnostics.details = details;
+    } else {
+      diagnostics.details = null;
+    }
+
+    if (typeof window.CustomEvent === "function" && typeof window.dispatchEvent === "function") {
+      try {
+        window.dispatchEvent(
+          new window.CustomEvent("texhub:widget:status", {
+            detail: {
+              widget_key: widgetKey,
+              stage: stage,
+              details: diagnostics.details
+            }
+          })
+        );
+      } catch (_error) {
+        // ignore diagnostics event errors
+      }
+    }
+  }
+
+  function debugLog(stage, details) {
+    updateDiagnostics(stage, details);
+
+    if (!debugEnabled || !window.console || typeof window.console.log !== "function") {
+      return;
+    }
+
+    if (typeof details === "undefined") {
+      window.console.log("[TexHub Widget]", stage);
+      return;
+    }
+
+    window.console.log("[TexHub Widget]", stage, details);
   }
 })();

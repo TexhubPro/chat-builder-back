@@ -291,3 +291,42 @@ test('widget public endpoint accepts image uploads', function () {
     expect($storagePath)->not->toBe('');
     Storage::disk('public')->assertExists($storagePath);
 });
+
+test('widget public endpoints expose permissive cors headers for external origins', function () {
+    [, $company, $assistant] = widgetContext();
+
+    AssistantChannel::query()->create([
+        'user_id' => $company->user_id,
+        'company_id' => $company->id,
+        'assistant_id' => $assistant->id,
+        'channel' => AssistantChannel::CHANNEL_WIDGET,
+        'name' => 'Web Widget',
+        'external_account_id' => 'widget-cors',
+        'is_active' => true,
+        'credentials' => [
+            'provider' => 'widget',
+            'widget_key' => 'wdg_test_key_cors',
+        ],
+    ]);
+
+    $this
+        ->withHeaders([
+            'Origin' => 'https://client-website.example',
+        ])
+        ->getJson('/api/widget/wdg_test_key_cors/config')
+        ->assertOk()
+        ->assertHeader('Access-Control-Allow-Origin', '*')
+        ->assertHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
+        ->assertHeader('Access-Control-Allow-Headers', 'Content-Type,Accept,Origin');
+
+    $this
+        ->withHeaders([
+            'Origin' => 'https://client-website.example',
+            'Access-Control-Request-Method' => 'POST',
+            'Access-Control-Request-Headers' => 'content-type',
+        ])
+        ->options('/api/widget/wdg_test_key_cors/messages')
+        ->assertNoContent()
+        ->assertHeader('Access-Control-Allow-Origin', '*')
+        ->assertHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+});
