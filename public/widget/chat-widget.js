@@ -72,10 +72,13 @@
     messages: [],
     messageIds: {},
     lastId: 0,
+    nextLocalMessageId: -1,
+    pendingLocalMessageIds: {},
     pollTimer: null,
     fileToSend: null,
     bootstrapDone: false
   };
+  var visitorContext = buildVisitorContext();
 
   var ui = null;
   onDomReady(initWidget);
@@ -162,31 +165,33 @@
       ".texhub-widget-wrap.right{right:16px !important;left:auto !important;align-items:flex-end !important;}",
       ".texhub-widget-launcher{height:56px;min-width:56px;padding:0 18px;border:none;border-radius:999px;color:#fff;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:8px;box-shadow:0 16px 32px rgba(15,23,42,.2);}",
       ".texhub-widget-launcher:disabled{opacity:.7;cursor:not-allowed;}",
-      ".texhub-widget-panel{width:min(420px,calc(100vw - 24px));height:min(760px,calc(100vh - 24px));border-radius:24px;overflow:hidden;display:flex;flex-direction:column;border:1px solid rgba(148,163,184,.35);box-shadow:0 24px 60px rgba(15,23,42,.24);background:#fff;}",
+      ".texhub-widget-panel{width:min(430px,calc(100vw - 24px));height:min(680px,calc(100vh - 24px));border-radius:24px;overflow:hidden;display:flex;flex-direction:column;border:1px solid rgba(148,163,184,.35);box-shadow:0 24px 60px rgba(15,23,42,.24);background:#fff;}",
       ".texhub-widget-panel.hidden{display:none;}",
-      ".texhub-widget-header{padding:22px 24px;display:flex;align-items:flex-start;justify-content:space-between;gap:8px;border-bottom:1px solid rgba(148,163,184,.25);background:#fff;}",
-      ".texhub-widget-header-title{font-size:22px;font-weight:800;line-height:1.2;margin:0;color:#0f172a;}",
-      ".texhub-widget-header-status{font-size:18px;color:#64748b;font-weight:600;margin:4px 0 0;}",
-      ".texhub-widget-close{border:none;background:transparent;color:#64748b;font-size:42px;line-height:1;cursor:pointer;padding:0 2px;border-radius:8px;}",
+      ".texhub-widget-header{padding:18px 20px;display:flex;align-items:flex-start;justify-content:space-between;gap:8px;border-bottom:1px solid rgba(148,163,184,.25);background:#fff;}",
+      ".texhub-widget-header-title{font-size:18px;font-weight:800;line-height:1.25;margin:0;color:#0f172a;}",
+      ".texhub-widget-header-status{font-size:13px;color:#64748b;font-weight:600;margin:4px 0 0;}",
+      ".texhub-widget-close{border:none;background:transparent;color:#64748b;font-size:32px;line-height:1;cursor:pointer;padding:0 2px;border-radius:8px;}",
       ".texhub-widget-close:hover{background:rgba(148,163,184,.18);}",
-      ".texhub-widget-body{flex:1;overflow:auto;padding:20px;display:flex;flex-direction:column;gap:12px;background:#F8FAFC;}",
-      ".texhub-widget-empty{font-size:18px;line-height:1.35;color:#64748b;padding:12px 14px;}",
-      ".texhub-widget-msg{max-width:92%;border-radius:24px;padding:16px 18px;font-size:18px;line-height:1.45;word-break:break-word;}",
+      ".texhub-widget-body{flex:1;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:10px;background:#F8FAFC;}",
+      ".texhub-widget-empty{font-size:17px;line-height:1.35;color:#64748b;padding:10px 12px;}",
+      ".texhub-widget-msg{max-width:92%;border-radius:22px;padding:14px 16px;font-size:17px;line-height:1.4;word-break:break-word;}",
       ".texhub-widget-msg.in{align-self:flex-start;background:#fff;color:#0f172a;border:1px solid rgba(148,163,184,.28);}",
       ".texhub-widget-msg.out{align-self:flex-end;background:#dbeafe;color:#0f172a;}",
+      ".texhub-widget-msg.pending{opacity:.78;}",
+      ".texhub-widget-msg.failed{background:#FFF1F3;border-color:#FDA4AF;}",
       ".texhub-widget-msg img{max-width:100%;display:block;border-radius:14px;}",
       ".texhub-widget-meta{display:block;font-size:14px;color:#64748b;margin-top:8px;}",
-      ".texhub-widget-footer{border-top:1px solid rgba(148,163,184,.25);padding:12px;display:flex;flex-direction:column;gap:8px;background:#fff;}",
-      ".texhub-widget-input{width:100%;min-height:74px;max-height:200px;resize:vertical;border:2px solid rgba(148,163,184,.4);border-radius:22px;padding:16px 18px;font-size:18px;line-height:1.35;color:#0f172a;outline:none;background:#fff;}",
+      ".texhub-widget-footer{border-top:1px solid rgba(148,163,184,.25);padding:10px;display:flex;flex-direction:column;gap:8px;background:#fff;}",
+      ".texhub-widget-input{width:100%;min-height:72px;max-height:180px;resize:vertical;border:2px solid rgba(148,163,184,.4);border-radius:20px;padding:14px 16px;font-size:17px;line-height:1.35;color:#0f172a;outline:none;background:#fff;}",
       ".texhub-widget-input:focus{border-color:#1677FF;box-shadow:0 0 0 3px rgba(22,119,255,.12);}",
       ".texhub-widget-actions{display:flex;align-items:center;gap:8px;}",
-      ".texhub-widget-file{position:relative;overflow:hidden;border:2px solid rgba(148,163,184,.4);border-radius:18px;padding:10px 18px;font-size:18px;font-weight:600;color:#334155;background:#fff;cursor:pointer;white-space:nowrap;}",
+      ".texhub-widget-file{position:relative;overflow:hidden;border:2px solid rgba(148,163,184,.4);border-radius:16px;padding:9px 16px;font-size:16px;font-weight:600;color:#334155;background:#fff;cursor:pointer;white-space:nowrap;}",
       ".texhub-widget-file input{position:absolute;inset:0;opacity:0;cursor:pointer;}",
-      ".texhub-widget-send{flex:1;border:none;border-radius:18px;color:#fff;font-size:20px;font-weight:700;height:54px;cursor:pointer;}",
+      ".texhub-widget-send{flex:1;border:none;border-radius:16px;color:#fff;font-size:16px;font-weight:700;height:50px;cursor:pointer;}",
       ".texhub-widget-send:disabled{opacity:.65;cursor:not-allowed;}",
       ".texhub-widget-file-name{font-size:14px;color:#64748b;padding:0 2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}",
       ".texhub-widget-error{display:none;font-size:13px;line-height:1.35;color:#B42318;background:#FEE4E2;border:1px solid #FDA29B;padding:8px 10px;border-radius:12px;}",
-      "@media (max-width:640px){.texhub-widget-wrap{left:12px!important;right:12px!important;bottom:12px!important;align-items:stretch!important}.texhub-widget-panel{width:100%;height:min(82vh,760px)}.texhub-widget-header{padding:16px}.texhub-widget-header-title{font-size:20px}.texhub-widget-header-status{font-size:16px}.texhub-widget-body{padding:14px}.texhub-widget-empty{font-size:18px;padding:8px}.texhub-widget-msg{font-size:17px;padding:14px 16px}.texhub-widget-input{font-size:16px;min-height:62px}.texhub-widget-send{height:50px;font-size:18px}}"
+      "@media (max-width:640px){.texhub-widget-wrap{left:12px!important;right:12px!important;bottom:12px!important;align-items:stretch!important}.texhub-widget-panel{width:100%;height:min(82vh,680px)}.texhub-widget-header{padding:14px 16px}.texhub-widget-header-title{font-size:18px}.texhub-widget-header-status{font-size:13px}.texhub-widget-body{padding:12px}.texhub-widget-empty{font-size:16px;padding:8px}.texhub-widget-msg{font-size:15px;padding:12px 14px}.texhub-widget-input{font-size:16px;min-height:62px}.texhub-widget-send{height:46px;font-size:16px}.texhub-widget-file{font-size:15px}}"
     ].join("");
 
     var wrapper = document.createElement("div");
@@ -204,8 +209,8 @@
     var panel = document.createElement("div");
     panel.className = "texhub-widget-panel hidden";
     panel.style.display = "none";
-    panel.style.width = "min(420px,calc(100vw - 24px))";
-    panel.style.height = "min(760px,calc(100vh - 24px))";
+    panel.style.width = "min(430px,calc(100vw - 24px))";
+    panel.style.height = "min(680px,calc(100vh - 24px))";
     panel.style.border = "1px solid rgba(148,163,184,.35)";
     panel.style.borderRadius = "24px";
     panel.style.overflow = "hidden";
@@ -592,7 +597,7 @@
       .then(function (data) {
         var items = Array.isArray(data && data.messages) ? data.messages : [];
         if (items.length > 0) {
-          pushMessages(items);
+          mergeServerMessages(items);
         }
 
         debugLog("messages_fetch_success", {
@@ -608,6 +613,115 @@
       .finally(function () {
         state.loading = false;
       });
+  }
+
+  function getClientMessageId(message) {
+    if (!message || typeof message !== "object") {
+      return "";
+    }
+
+    if (message.payload && typeof message.payload === "object") {
+      var fromPayload = String(message.payload.client_message_id || "").trim();
+      if (fromPayload !== "") {
+        return fromPayload;
+      }
+    }
+
+    return String(message.channel_message_id || "").trim();
+  }
+
+  function mergeServerMessages(items) {
+    if (!Array.isArray(items) || items.length === 0) {
+      return;
+    }
+
+    for (var i = 0; i < items.length; i += 1) {
+      var message = items[i];
+      var clientMessageId = getClientMessageId(message);
+
+      if (clientMessageId && state.pendingLocalMessageIds[clientMessageId]) {
+        removeLocalPendingMessage(clientMessageId);
+      }
+    }
+
+    pushMessages(items);
+  }
+
+  function removeLocalPendingMessage(clientMessageId) {
+    var pendingId = state.pendingLocalMessageIds[clientMessageId];
+
+    if (typeof pendingId !== "number") {
+      return;
+    }
+
+    var nextMessages = [];
+    for (var i = 0; i < state.messages.length; i += 1) {
+      var current = state.messages[i];
+      if (current && current.id === pendingId) {
+        if (typeof current.media_url === "string" && current.media_url.indexOf("blob:") === 0 && typeof URL.revokeObjectURL === "function") {
+          try {
+            URL.revokeObjectURL(current.media_url);
+          } catch (_error) {
+            // noop
+          }
+        }
+        continue;
+      }
+      nextMessages.push(current);
+    }
+
+    state.messages = nextMessages;
+    delete state.pendingLocalMessageIds[clientMessageId];
+    delete state.messageIds[pendingId];
+  }
+
+  function addLocalPendingMessage(text, file, clientMessageId) {
+    var localId = state.nextLocalMessageId;
+    state.nextLocalMessageId -= 1;
+
+    var previewUrl = null;
+    if (file && typeof URL.createObjectURL === "function") {
+      try {
+        previewUrl = URL.createObjectURL(file);
+      } catch (_error) {
+        previewUrl = null;
+      }
+    }
+
+    var localMessage = {
+      id: localId,
+      sender_type: "customer",
+      direction: "inbound",
+      status: "sending",
+      channel_message_id: clientMessageId,
+      message_type: file ? "image" : "text",
+      text: text || "",
+      media_url: previewUrl,
+      sent_at: new Date().toISOString(),
+      payload: {
+        client_message_id: clientMessageId,
+        local_pending: true
+      }
+    };
+
+    state.pendingLocalMessageIds[clientMessageId] = localId;
+    pushMessages([localMessage]);
+  }
+
+  function markPendingMessageFailed(clientMessageId) {
+    var pendingId = state.pendingLocalMessageIds[clientMessageId];
+    if (typeof pendingId !== "number") {
+      return;
+    }
+
+    for (var i = 0; i < state.messages.length; i += 1) {
+      if (state.messages[i] && state.messages[i].id === pendingId) {
+        state.messages[i].status = "failed";
+        break;
+      }
+    }
+
+    renderMessages();
   }
 
   function pushMessages(items) {
@@ -657,6 +771,11 @@
         message.sender_type === "agent";
 
       bubble.className = "texhub-widget-msg " + (isOutbound ? "out" : "in");
+      if (message.status === "sending") {
+        bubble.className += " pending";
+      } else if (message.status === "failed") {
+        bubble.className += " failed";
+      }
 
       if (message.message_type === "image" && message.media_url) {
         var image = document.createElement("img");
@@ -676,7 +795,13 @@
 
       var meta = document.createElement("span");
       meta.className = "texhub-widget-meta";
-      meta.textContent = formatTime(message.sent_at || message.created_at);
+      if (message.status === "sending") {
+        meta.textContent = "Отправка...";
+      } else if (message.status === "failed") {
+        meta.textContent = "Не отправлено";
+      } else {
+        meta.textContent = formatTime(message.sent_at || message.created_at);
+      }
       bubble.appendChild(meta);
 
       ui.body.appendChild(bubble);
@@ -718,26 +843,47 @@
 
     clearInlineError(true);
 
+    var clientMessageId = "web_" + randomId(20);
+    var draftText = text;
+    var draftFile = file;
+
+    // Optimistic UX: show message and clear input immediately.
+    addLocalPendingMessage(draftText, draftFile, clientMessageId);
+    ui.input.value = "";
+    ui.fileInput.value = "";
+    state.fileToSend = null;
+    ui.fileName.style.display = "none";
+    ui.fileName.textContent = "";
+
     var formData = new FormData();
     formData.append("session_id", state.sessionId);
 
-    if (text) {
-      formData.append("text", text);
+    if (draftText) {
+      formData.append("text", draftText);
     }
 
-    if (file) {
-      formData.append("file", file);
+    if (draftFile) {
+      formData.append("file", draftFile);
     }
 
-    formData.append("client_message_id", "web_" + randomId(20));
+    formData.append("client_message_id", clientMessageId);
     formData.append("page_url", window.location.href);
+    appendFormValue(formData, "visitor_name", visitorContext.visitor_name);
+    appendFormValue(formData, "visitor_identifier", visitorContext.visitor_identifier);
+    appendFormValue(formData, "visitor_city", visitorContext.visitor_city);
+    appendFormValue(formData, "visitor_country", visitorContext.visitor_country);
+    appendFormValue(formData, "visitor_address", visitorContext.visitor_address);
+    appendFormValue(formData, "visitor_page", window.location.pathname + window.location.search);
+    appendFormValue(formData, "visitor_referrer", visitorContext.visitor_referrer);
+    appendFormValue(formData, "visitor_language", visitorContext.visitor_language);
+    appendFormValue(formData, "visitor_timezone", visitorContext.visitor_timezone);
 
     state.sending = true;
     ui.send.disabled = true;
     ui.send.textContent = "Отправка...";
     debugLog("send_start", {
-      has_text: text !== "",
-      has_file: !!file
+      has_text: draftText !== "",
+      has_file: !!draftFile
     });
 
     fetch(apiBase + "/" + encodeURIComponent(widgetKey) + "/messages", {
@@ -757,18 +903,14 @@
       })
       .then(function (data) {
         if (data && data.chat_message) {
-          pushMessages([data.chat_message]);
+          mergeServerMessages([data.chat_message]);
+        } else {
+          removeLocalPendingMessage(clientMessageId);
         }
 
         if (data && data.assistant_message) {
-          pushMessages([data.assistant_message]);
+          mergeServerMessages([data.assistant_message]);
         }
-
-        ui.input.value = "";
-        ui.fileInput.value = "";
-        state.fileToSend = null;
-        ui.fileName.style.display = "none";
-        ui.fileName.textContent = "";
         clearInlineError(true);
 
         debugLog("send_success", {
@@ -777,6 +919,7 @@
         });
       })
       .catch(function (error) {
+        markPendingMessageFailed(clientMessageId);
         setInlineError(error && error.message ? error.message : "Не удалось отправить сообщение.", false);
         debugLog("send_failed", {
           error: serializeError(error)
@@ -801,8 +944,31 @@
 
         try {
           var payload = JSON.parse(normalized);
+          var validationDetail = "";
+
+          if (payload && payload.errors && typeof payload.errors === "object") {
+            var errorKeys = Object.keys(payload.errors);
+            if (errorKeys.length > 0) {
+              var firstKey = errorKeys[0];
+              var firstFieldErrors = payload.errors[firstKey];
+              if (Array.isArray(firstFieldErrors) && firstFieldErrors.length > 0) {
+                validationDetail = String(firstFieldErrors[0] || "").trim();
+              } else if (typeof firstFieldErrors === "string") {
+                validationDetail = firstFieldErrors.trim();
+              }
+            }
+          }
+
           if (payload && typeof payload.message === "string" && payload.message.trim() !== "") {
-            return payload.message.trim();
+            var message = payload.message.trim();
+            if (message.toLowerCase() === "validation failed." && validationDetail !== "") {
+              return validationDetail;
+            }
+            return message;
+          }
+
+          if (validationDetail !== "") {
+            return validationDetail;
           }
         } catch (_error) {
           // ignore parse errors and fallback to raw text
@@ -813,6 +979,72 @@
       .catch(function () {
         return "";
       });
+  }
+
+  function appendFormValue(formData, key, value) {
+    var normalized = String(value || "").trim();
+    if (normalized === "") {
+      return;
+    }
+    formData.append(key, normalized);
+  }
+
+  function buildVisitorContext() {
+    var explicitName = String(script.getAttribute("data-visitor-name") || "").trim();
+    var explicitId = String(script.getAttribute("data-visitor-id") || "").trim();
+    var explicitCity = String(script.getAttribute("data-visitor-city") || "").trim();
+    var explicitCountry = String(script.getAttribute("data-visitor-country") || "").trim();
+    var explicitAddress = String(script.getAttribute("data-visitor-address") || "").trim();
+    var fallbackId = String(state.sessionId || "").trim();
+    var resolvedId = explicitId || fallbackId;
+
+    var language = "";
+    if (typeof navigator !== "undefined" && typeof navigator.language === "string") {
+      language = navigator.language.trim();
+    }
+
+    var timezone = "";
+    try {
+      timezone = String(Intl.DateTimeFormat().resolvedOptions().timeZone || "").trim();
+    } catch (_error) {
+      timezone = "";
+    }
+
+    var resolvedName = explicitName;
+    if (!resolvedName) {
+      var shortId = resolvedId ? resolvedId.slice(-8).toUpperCase() : "";
+      var nameParts = [];
+      nameParts.push(shortId ? ("Visitor " + shortId) : "Website Visitor");
+
+      var locationBits = [];
+      if (explicitCity) {
+        locationBits.push(explicitCity);
+      }
+      if (explicitCountry) {
+        locationBits.push(explicitCountry);
+      }
+      if (locationBits.length > 0) {
+        nameParts.push(locationBits.join(", "));
+      }
+
+      resolvedName = nameParts.join(" · ");
+    }
+
+    var referrer = "";
+    if (typeof document !== "undefined" && typeof document.referrer === "string") {
+      referrer = document.referrer.trim();
+    }
+
+    return {
+      visitor_name: resolvedName,
+      visitor_identifier: resolvedId,
+      visitor_city: explicitCity,
+      visitor_country: explicitCountry,
+      visitor_address: explicitAddress,
+      visitor_referrer: referrer,
+      visitor_language: language,
+      visitor_timezone: timezone
+    };
   }
 
   function startPolling() {

@@ -144,9 +144,17 @@ class WidgetChatController extends Controller
             'text' => ['nullable', 'string', 'max:20000'],
             'file' => ['nullable', 'image', 'max:8192'],
             'visitor_name' => ['nullable', 'string', 'max:160'],
+            'visitor_identifier' => ['nullable', 'string', 'max:191'],
+            'visitor_city' => ['nullable', 'string', 'max:120'],
+            'visitor_country' => ['nullable', 'string', 'max:120'],
+            'visitor_address' => ['nullable', 'string', 'max:255'],
             'visitor_email' => ['nullable', 'email', 'max:191'],
             'visitor_phone' => ['nullable', 'string', 'max:64'],
             'page_url' => ['nullable', 'url', 'max:2048'],
+            'visitor_page' => ['nullable', 'string', 'max:2048'],
+            'visitor_referrer' => ['nullable', 'url', 'max:2048'],
+            'visitor_language' => ['nullable', 'string', 'max:32'],
+            'visitor_timezone' => ['nullable', 'string', 'max:80'],
             'client_message_id' => ['nullable', 'string', 'max:191'],
         ]);
 
@@ -428,23 +436,46 @@ class WidgetChatController extends Controller
             : [];
 
         $visitorName = $this->nullableTrimmedString($validatedPayload['visitor_name'] ?? null);
+        $visitorIdentifier = $this->nullableTrimmedString($validatedPayload['visitor_identifier'] ?? null);
+        $visitorCity = $this->nullableTrimmedString($validatedPayload['visitor_city'] ?? null);
+        $visitorCountry = $this->nullableTrimmedString($validatedPayload['visitor_country'] ?? null);
+        $visitorAddress = $this->nullableTrimmedString($validatedPayload['visitor_address'] ?? null);
         $visitorEmail = $this->nullableTrimmedString($validatedPayload['visitor_email'] ?? null);
         $visitorPhone = $this->nullableTrimmedString($validatedPayload['visitor_phone'] ?? null);
         $pageUrl = $this->nullableTrimmedString($validatedPayload['page_url'] ?? null);
+        $visitorPage = $this->nullableTrimmedString($validatedPayload['visitor_page'] ?? null);
+        $visitorReferrer = $this->nullableTrimmedString($validatedPayload['visitor_referrer'] ?? null);
+        $visitorLanguage = $this->nullableTrimmedString($validatedPayload['visitor_language'] ?? null);
+        $visitorTimezone = $this->nullableTrimmedString($validatedPayload['visitor_timezone'] ?? null);
 
         $widgetMetadata = array_replace($widgetMetadata, array_filter([
             'session_id' => $sessionId,
             'assistant_channel_id' => $assistantChannel->id,
             'visitor_name' => $visitorName,
+            'visitor_identifier' => $visitorIdentifier,
+            'visitor_city' => $visitorCity,
+            'visitor_country' => $visitorCountry,
+            'visitor_address' => $visitorAddress,
             'visitor_email' => $visitorEmail,
             'visitor_phone' => $visitorPhone,
             'page_url' => $pageUrl,
+            'visitor_page' => $visitorPage,
+            'visitor_referrer' => $visitorReferrer,
+            'visitor_language' => $visitorLanguage,
+            'visitor_timezone' => $visitorTimezone,
             'last_seen_at' => now()->toIso8601String(),
         ], static fn (mixed $value): bool => $value !== null && $value !== ''));
 
         $displayName = $visitorName ?? $chat->name;
         if ($displayName === null || trim($displayName) === '') {
-            $displayName = 'Website Visitor';
+            $fallbackIdentifier = $visitorIdentifier ?? Str::upper(substr($sessionId, -8));
+            $locationBits = array_values(array_filter([$visitorCity, $visitorCountry]));
+
+            $displayName = 'Visitor '.trim((string) $fallbackIdentifier);
+
+            if ($locationBits !== []) {
+                $displayName .= ' · '.implode(', ', $locationBits);
+            }
         }
 
         $chat->fill([
