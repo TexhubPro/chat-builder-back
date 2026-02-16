@@ -277,6 +277,7 @@
     send.type = "button";
     send.className = "texhub-widget-send";
     send.textContent = "Отправить";
+    send.dataset.defaultLabel = "Отправить";
 
     actions.appendChild(fileButton);
     actions.appendChild(send);
@@ -509,6 +510,12 @@
     ui.send.disabled = !active || state.sending;
 
     if (!active) {
+      ui.send.textContent = "Недоступно";
+    } else if (!state.sending) {
+      ui.send.textContent = ui.send.dataset.defaultLabel || "Отправить";
+    }
+
+    if (!active) {
       setInlineError("Чат временно недоступен. Попробуйте позже.", true);
     } else if (ui.error && ui.error.dataset && ui.error.dataset.persistent === "1") {
       clearInlineError(true);
@@ -727,6 +734,7 @@
 
     state.sending = true;
     ui.send.disabled = true;
+    ui.send.textContent = "Отправка...";
     debugLog("send_start", {
       has_text: text !== "",
       has_file: !!file
@@ -777,6 +785,7 @@
       })
       .finally(function () {
         state.sending = false;
+        ui.send.textContent = ui.send.dataset.defaultLabel || "Отправить";
         applyChannelAvailability();
         fetchMessages();
       });
