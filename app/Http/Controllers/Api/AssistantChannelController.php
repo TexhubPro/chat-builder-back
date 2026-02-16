@@ -399,7 +399,20 @@ class AssistantChannelController extends Controller
             $company
         );
 
+        $scriptVersion = null;
+        $scriptPath = public_path('widget/chat-widget.js');
+        if (is_file($scriptPath)) {
+            $mtime = @filemtime($scriptPath);
+            if (is_int($mtime) && $mtime > 0) {
+                $scriptVersion = (string) $mtime;
+            }
+        }
+
         $scriptUrl = url('/widget/chat-widget.js');
+        if (is_string($scriptVersion) && $scriptVersion !== '') {
+            $scriptUrl .= '?v='.$scriptVersion;
+        }
+
         $apiBaseUrl = url('/api/widget');
         $embedScriptTag = $widgetKey === null
             ? null
