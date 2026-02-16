@@ -165,33 +165,33 @@
       ".texhub-widget-wrap.right{right:16px !important;left:auto !important;align-items:flex-end !important;}",
       ".texhub-widget-launcher{height:56px;min-width:56px;padding:0 18px;border:none;border-radius:999px;color:#fff;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:8px;box-shadow:0 16px 32px rgba(15,23,42,.2);}",
       ".texhub-widget-launcher:disabled{opacity:.7;cursor:not-allowed;}",
-      ".texhub-widget-panel{width:min(430px,calc(100vw - 24px));height:min(680px,calc(100vh - 24px));border-radius:24px;overflow:hidden;display:flex;flex-direction:column;border:1px solid rgba(148,163,184,.35);box-shadow:0 24px 60px rgba(15,23,42,.24);background:#fff;}",
+      ".texhub-widget-panel{width:min(390px,calc(100vw - 24px));height:min(620px,calc(100vh - 24px));border-radius:20px;overflow:hidden;display:flex;flex-direction:column;border:1px solid rgba(148,163,184,.35);box-shadow:0 20px 44px rgba(15,23,42,.2);background:#fff;}",
       ".texhub-widget-panel.hidden{display:none;}",
-      ".texhub-widget-header{padding:18px 20px;display:flex;align-items:flex-start;justify-content:space-between;gap:8px;border-bottom:1px solid rgba(148,163,184,.25);background:#fff;}",
-      ".texhub-widget-header-title{font-size:18px;font-weight:800;line-height:1.25;margin:0;color:#0f172a;}",
-      ".texhub-widget-header-status{font-size:13px;color:#64748b;font-weight:600;margin:4px 0 0;}",
+      ".texhub-widget-header{padding:14px 16px;display:flex;align-items:flex-start;justify-content:space-between;gap:8px;border-bottom:1px solid rgba(148,163,184,.25);background:#fff;}",
+      ".texhub-widget-header-title{font-size:17px;font-weight:800;line-height:1.25;margin:0;color:#0f172a;}",
+      ".texhub-widget-header-status{font-size:12px;color:#64748b;font-weight:600;margin:3px 0 0;}",
       ".texhub-widget-close{border:none;background:transparent;color:#64748b;font-size:32px;line-height:1;cursor:pointer;padding:0 2px;border-radius:8px;}",
       ".texhub-widget-close:hover{background:rgba(148,163,184,.18);}",
-      ".texhub-widget-body{flex:1;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:10px;background:#F8FAFC;}",
-      ".texhub-widget-empty{font-size:17px;line-height:1.35;color:#64748b;padding:10px 12px;}",
-      ".texhub-widget-msg{max-width:92%;border-radius:22px;padding:14px 16px;font-size:17px;line-height:1.4;word-break:break-word;}",
+      ".texhub-widget-body{flex:1;overflow:auto;padding:12px;display:flex;flex-direction:column;gap:8px;background:#F8FAFC;}",
+      ".texhub-widget-empty{font-size:16px;line-height:1.35;color:#64748b;padding:8px 10px;}",
+      ".texhub-widget-msg{max-width:92%;border-radius:18px;padding:12px 14px;font-size:15px;line-height:1.35;word-break:break-word;}",
       ".texhub-widget-msg.in{align-self:flex-start;background:#fff;color:#0f172a;border:1px solid rgba(148,163,184,.28);}",
       ".texhub-widget-msg.out{align-self:flex-end;background:#dbeafe;color:#0f172a;}",
       ".texhub-widget-msg.pending{opacity:.78;}",
       ".texhub-widget-msg.failed{background:#FFF1F3;border-color:#FDA4AF;}",
       ".texhub-widget-msg img{max-width:100%;display:block;border-radius:14px;}",
-      ".texhub-widget-meta{display:block;font-size:14px;color:#64748b;margin-top:8px;}",
+      ".texhub-widget-meta{display:block;font-size:12px;color:#64748b;margin-top:6px;}",
       ".texhub-widget-footer{border-top:1px solid rgba(148,163,184,.25);padding:10px;display:flex;flex-direction:column;gap:8px;background:#fff;}",
-      ".texhub-widget-input{width:100%;min-height:72px;max-height:180px;resize:vertical;border:2px solid rgba(148,163,184,.4);border-radius:20px;padding:14px 16px;font-size:17px;line-height:1.35;color:#0f172a;outline:none;background:#fff;}",
-      ".texhub-widget-input:focus{border-color:#1677FF;box-shadow:0 0 0 3px rgba(22,119,255,.12);}",
-      ".texhub-widget-actions{display:flex;align-items:center;gap:8px;}",
-      ".texhub-widget-file{position:relative;overflow:hidden;border:2px solid rgba(148,163,184,.4);border-radius:16px;padding:9px 16px;font-size:16px;font-weight:600;color:#334155;background:#fff;cursor:pointer;white-space:nowrap;}",
+      ".texhub-widget-composer{display:flex;align-items:center;gap:8px;border:1px solid rgba(148,163,184,.45);border-radius:16px;background:#fff;padding:6px 8px;}",
+      ".texhub-widget-input{flex:1;min-height:38px;max-height:110px;resize:none;border:none;padding:8px 2px;font-size:15px;line-height:1.35;color:#0f172a;outline:none;background:transparent;}",
+      ".texhub-widget-input:focus{box-shadow:none;}",
+      ".texhub-widget-file{position:relative;overflow:hidden;border:none;border-radius:12px;width:38px;height:38px;display:inline-flex;align-items:center;justify-content:center;font-size:20px;color:#667085;background:#EEF2F7;cursor:pointer;flex:0 0 38px;}",
       ".texhub-widget-file input{position:absolute;inset:0;opacity:0;cursor:pointer;}",
-      ".texhub-widget-send{flex:1;border:none;border-radius:16px;color:#fff;font-size:16px;font-weight:700;height:50px;cursor:pointer;}",
+      ".texhub-widget-send{border:none;border-radius:12px;color:#fff;font-size:20px;font-weight:700;width:38px;height:38px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;flex:0 0 38px;}",
       ".texhub-widget-send:disabled{opacity:.65;cursor:not-allowed;}",
-      ".texhub-widget-file-name{font-size:14px;color:#64748b;padding:0 2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}",
+      ".texhub-widget-file-name{font-size:12px;color:#64748b;padding:0 2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}",
       ".texhub-widget-error{display:none;font-size:13px;line-height:1.35;color:#B42318;background:#FEE4E2;border:1px solid #FDA29B;padding:8px 10px;border-radius:12px;}",
-      "@media (max-width:640px){.texhub-widget-wrap{left:12px!important;right:12px!important;bottom:12px!important;align-items:stretch!important}.texhub-widget-panel{width:100%;height:min(82vh,680px)}.texhub-widget-header{padding:14px 16px}.texhub-widget-header-title{font-size:18px}.texhub-widget-header-status{font-size:13px}.texhub-widget-body{padding:12px}.texhub-widget-empty{font-size:16px;padding:8px}.texhub-widget-msg{font-size:15px;padding:12px 14px}.texhub-widget-input{font-size:16px;min-height:62px}.texhub-widget-send{height:46px;font-size:16px}.texhub-widget-file{font-size:15px}}"
+      "@media (max-width:640px){.texhub-widget-wrap{left:12px!important;right:12px!important;bottom:12px!important;align-items:stretch!important}.texhub-widget-panel{width:100%;height:min(82vh,620px)}.texhub-widget-header{padding:12px 14px}.texhub-widget-header-title{font-size:16px}.texhub-widget-header-status{font-size:12px}.texhub-widget-body{padding:10px}.texhub-widget-empty{font-size:15px;padding:6px}.texhub-widget-msg{font-size:14px;padding:10px 12px}.texhub-widget-input{font-size:15px;min-height:36px}.texhub-widget-send,.texhub-widget-file{width:36px;height:36px}}"
     ].join("");
 
     var wrapper = document.createElement("div");
@@ -209,10 +209,10 @@
     var panel = document.createElement("div");
     panel.className = "texhub-widget-panel hidden";
     panel.style.display = "none";
-    panel.style.width = "min(430px,calc(100vw - 24px))";
-    panel.style.height = "min(680px,calc(100vh - 24px))";
+    panel.style.width = "min(390px,calc(100vw - 24px))";
+    panel.style.height = "min(620px,calc(100vh - 24px))";
     panel.style.border = "1px solid rgba(148,163,184,.35)";
-    panel.style.borderRadius = "24px";
+    panel.style.borderRadius = "20px";
     panel.style.overflow = "hidden";
     panel.style.boxShadow = "0 24px 60px rgba(15,23,42,.24)";
     panel.style.background = "#fff";
@@ -262,15 +262,15 @@
     fileName.className = "texhub-widget-file-name";
     fileName.style.display = "none";
 
-    var actions = document.createElement("div");
-    actions.className = "texhub-widget-actions";
+    var composer = document.createElement("div");
+    composer.className = "texhub-widget-composer";
 
     var error = document.createElement("div");
     error.className = "texhub-widget-error";
 
     var fileButton = document.createElement("label");
     fileButton.className = "texhub-widget-file";
-    fileButton.textContent = "Фото";
+    fileButton.textContent = "📎";
 
     var fileInput = document.createElement("input");
     fileInput.type = "file";
@@ -281,16 +281,16 @@
     var send = document.createElement("button");
     send.type = "button";
     send.className = "texhub-widget-send";
-    send.textContent = "Отправить";
-    send.dataset.defaultLabel = "Отправить";
+    send.textContent = "↑";
+    send.dataset.defaultLabel = "↑";
 
-    actions.appendChild(fileButton);
-    actions.appendChild(send);
+    composer.appendChild(fileButton);
+    composer.appendChild(input);
+    composer.appendChild(send);
 
-    footer.appendChild(input);
+    footer.appendChild(composer);
     footer.appendChild(fileName);
     footer.appendChild(error);
-    footer.appendChild(actions);
 
     panel.appendChild(header);
     panel.appendChild(body);
@@ -337,7 +337,9 @@
       fileInput: fileInput,
       fileName: fileName,
       send: send,
-      error: error
+      error: error,
+      composer: composer,
+      fileButton: fileButton
     };
   }
 
@@ -439,7 +441,7 @@
   }
 
   function applyConfigToUi() {
-    if (!ui || !ui.wrapper || !ui.panel || !ui.launcher || !ui.send || !ui.title || !ui.status || !ui.input || !ui.body || !ui.empty || !ui.footer) {
+    if (!ui || !ui.wrapper || !ui.panel || !ui.launcher || !ui.send || !ui.title || !ui.status || !ui.input || !ui.body || !ui.empty || !ui.footer || !ui.composer || !ui.fileButton) {
       debugLog("apply_config_skipped_ui_not_ready");
       return;
     }
@@ -475,9 +477,12 @@
       ui.footer.style.background = "#0F172A";
       ui.title.style.color = "#F8FAFC";
       ui.status.style.color = "#94A3B8";
-      ui.input.style.background = "#111827";
+      ui.composer.style.background = "#111827";
+      ui.composer.style.borderColor = "rgba(148,163,184,.35)";
+      ui.fileButton.style.background = "#1F2937";
+      ui.fileButton.style.color = "#CBD5E1";
+      ui.input.style.background = "transparent";
       ui.input.style.color = "#F8FAFC";
-      ui.input.style.borderColor = "rgba(148,163,184,.35)";
       ui.empty.style.color = "#CBD5E1";
       ui.empty.textContent = settings.welcome_message || "Здравствуйте! Напишите ваш вопрос.";
     } else {
@@ -486,9 +491,12 @@
       ui.footer.style.background = "#ffffff";
       ui.title.style.color = "#0F172A";
       ui.status.style.color = "#64748B";
-      ui.input.style.background = "#ffffff";
+      ui.composer.style.background = "#ffffff";
+      ui.composer.style.borderColor = "rgba(148,163,184,.45)";
+      ui.fileButton.style.background = "#EEF2F7";
+      ui.fileButton.style.color = "#667085";
+      ui.input.style.background = "transparent";
       ui.input.style.color = "#0F172A";
-      ui.input.style.borderColor = "rgba(148,163,184,.4)";
       ui.empty.style.color = "#64748B";
       ui.empty.textContent = settings.welcome_message || "Здравствуйте! Напишите ваш вопрос.";
     }
@@ -515,9 +523,11 @@
     ui.send.disabled = !active || state.sending;
 
     if (!active) {
-      ui.send.textContent = "Недоступно";
+      ui.send.textContent = "×";
+      ui.send.title = "Чат недоступен";
     } else if (!state.sending) {
       ui.send.textContent = ui.send.dataset.defaultLabel || "Отправить";
+      ui.send.title = "Отправить";
     }
 
     if (!active) {
@@ -880,7 +890,8 @@
 
     state.sending = true;
     ui.send.disabled = true;
-    ui.send.textContent = "Отправка...";
+    ui.send.textContent = "…";
+    ui.send.title = "Отправка";
     debugLog("send_start", {
       has_text: draftText !== "",
       has_file: !!draftFile
@@ -929,6 +940,7 @@
       .finally(function () {
         state.sending = false;
         ui.send.textContent = ui.send.dataset.defaultLabel || "Отправить";
+        ui.send.title = "Отправить";
         applyChannelAvailability();
         fetchMessages();
       });
