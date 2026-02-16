@@ -182,16 +182,16 @@
       ".texhub-widget-msg img{max-width:100%;display:block;border-radius:14px;}",
       ".texhub-widget-meta{display:block;font-size:11px;color:#64748b;margin-top:5px;}",
       ".texhub-widget-footer{border-top:1px solid rgba(148,163,184,.25);padding:8px;display:flex;flex-direction:column;gap:6px;background:#fff;}",
-      ".texhub-widget-composer{display:flex;align-items:center;gap:6px;border:1px solid rgba(148,163,184,.45);border-radius:14px;background:#fff;padding:5px 6px;}",
-      ".texhub-widget-input{flex:1;min-height:34px;max-height:96px;resize:none;border:none;padding:7px 2px;font-size:14px;line-height:1.3;color:#0f172a;outline:none;background:transparent;}",
+      ".texhub-widget-composer{display:grid;grid-template-columns:36px minmax(0,1fr) 36px;align-items:center;gap:8px;border:1px solid rgba(148,163,184,.45);border-radius:16px;background:#fff;padding:6px;min-height:48px;}",
+      ".texhub-widget-input{width:100%;min-height:36px;max-height:96px;resize:none;border:none;margin:0;padding:8px 0;font-size:14px;line-height:1.3;color:#0f172a;outline:none;background:transparent;}",
       ".texhub-widget-input:focus{box-shadow:none;}",
-      ".texhub-widget-file{position:relative;overflow:hidden;border:none;border-radius:10px;width:34px;height:34px;display:inline-flex;align-items:center;justify-content:center;font-size:18px;color:#667085;background:#EEF2F7;cursor:pointer;flex:0 0 34px;}",
+      ".texhub-widget-file{position:relative;overflow:hidden;border:none;border-radius:11px;width:36px;height:36px;display:inline-flex;align-items:center;justify-content:center;font-size:19px;line-height:1;color:#667085;background:#EEF2F7;cursor:pointer;}",
       ".texhub-widget-file input{position:absolute;inset:0;opacity:0;cursor:pointer;}",
-      ".texhub-widget-send{border:none;border-radius:999px;color:#fff;font-size:18px;font-weight:700;width:34px;height:34px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;flex:0 0 34px;}",
+      ".texhub-widget-send{border:none;border-radius:999px;color:#fff;font-size:19px;font-weight:700;line-height:1;width:36px;height:36px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;}",
       ".texhub-widget-send:disabled{opacity:.65;cursor:not-allowed;}",
       ".texhub-widget-file-name{font-size:11px;color:#64748b;padding:0 2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}",
       ".texhub-widget-error{display:none;font-size:12px;line-height:1.35;color:#B42318;background:#FEE4E2;border:1px solid #FDA29B;padding:7px 9px;border-radius:10px;}",
-      "@media (max-width:640px){.texhub-widget-wrap{left:10px!important;right:10px!important;bottom:10px!important;align-items:stretch!important}.texhub-widget-panel{width:100%;height:min(74vh,520px)}.texhub-widget-header{padding:10px 12px}.texhub-widget-header-title{font-size:15px}.texhub-widget-header-status{font-size:11px}.texhub-widget-body{padding:8px}.texhub-widget-empty{font-size:13px;padding:6px}.texhub-widget-msg{font-size:13px;padding:9px 11px}.texhub-widget-input{font-size:14px;min-height:33px}.texhub-widget-send,.texhub-widget-file{width:32px;height:32px;flex-basis:32px}}"
+      "@media (max-width:640px){.texhub-widget-wrap{left:10px!important;right:10px!important;bottom:10px!important;align-items:stretch!important}.texhub-widget-panel{width:100%;height:min(74vh,520px)}.texhub-widget-header{padding:10px 12px}.texhub-widget-header-title{font-size:15px}.texhub-widget-header-status{font-size:11px}.texhub-widget-body{padding:8px}.texhub-widget-empty{font-size:13px;padding:6px}.texhub-widget-msg{font-size:13px;padding:9px 11px}.texhub-widget-composer{grid-template-columns:32px minmax(0,1fr) 32px;gap:6px;padding:5px;min-height:44px}.texhub-widget-input{font-size:14px;min-height:32px;padding:7px 0}.texhub-widget-send,.texhub-widget-file{width:32px;height:32px}}"
     ].join("");
 
     var wrapper = document.createElement("div");
