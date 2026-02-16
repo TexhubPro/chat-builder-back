@@ -3,16 +3,24 @@
 
   var script = document.currentScript;
   if (!script) {
-    var scripts = document.querySelectorAll("script[data-widget-key]");
+    var scripts = document.querySelectorAll("script[data-widget-key], script[src*=\"/widget/chat-widget.js\"]");
     script = scripts.length > 0 ? scripts[scripts.length - 1] : null;
   }
 
   if (!script) {
+    console.warn("[TexHub Widget] Script tag not found. Widget was not initialized.");
     return;
   }
 
-  var widgetKey = (script.getAttribute("data-widget-key") || "").trim();
+  var widgetKey = (
+    script.getAttribute("data-widget-key") ||
+    script.getAttribute("data-widget-id") ||
+    getWidgetKeyFromScriptUrl(script.getAttribute("src") || "") ||
+    ""
+  ).trim();
+
   if (!widgetKey) {
+    console.warn("[TexHub Widget] Missing widget key. Add data-widget-key=\"...\" to script tag.");
     return;
   }
 
@@ -661,6 +669,21 @@
   function parseBooleanFlag(value) {
     var normalized = String(value || "").trim().toLowerCase();
     return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+  }
+
+  function getWidgetKeyFromScriptUrl(src) {
+    try {
+      var parsed = new URL(String(src || ""), window.location.href);
+      var fromSnake = (parsed.searchParams.get("widget_key") || "").trim();
+      if (fromSnake) {
+        return fromSnake;
+      }
+
+      var fromCamel = (parsed.searchParams.get("widgetKey") || "").trim();
+      return fromCamel || "";
+    } catch (_error) {
+      return "";
+    }
   }
 
   function onDomReady(callback) {
