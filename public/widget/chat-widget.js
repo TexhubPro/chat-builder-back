@@ -868,15 +868,15 @@
 
     formData.append("client_message_id", clientMessageId);
     formData.append("page_url", window.location.href);
-    appendFormValue(formData, "visitor_name", visitorContext.visitor_name);
-    appendFormValue(formData, "visitor_identifier", visitorContext.visitor_identifier);
-    appendFormValue(formData, "visitor_city", visitorContext.visitor_city);
-    appendFormValue(formData, "visitor_country", visitorContext.visitor_country);
-    appendFormValue(formData, "visitor_address", visitorContext.visitor_address);
-    appendFormValue(formData, "visitor_page", window.location.pathname + window.location.search);
-    appendFormValue(formData, "visitor_referrer", visitorContext.visitor_referrer);
-    appendFormValue(formData, "visitor_language", visitorContext.visitor_language);
-    appendFormValue(formData, "visitor_timezone", visitorContext.visitor_timezone);
+    appendFormValue(formData, "visitor_name", visitorContext.visitor_name, 160);
+    appendFormValue(formData, "visitor_identifier", visitorContext.visitor_identifier, 191);
+    appendFormValue(formData, "visitor_city", visitorContext.visitor_city, 120);
+    appendFormValue(formData, "visitor_country", visitorContext.visitor_country, 120);
+    appendFormValue(formData, "visitor_address", visitorContext.visitor_address, 255);
+    appendFormValue(formData, "visitor_page", window.location.pathname + window.location.search, 2048);
+    appendFormValue(formData, "visitor_referrer", visitorContext.visitor_referrer, 2048);
+    appendFormValue(formData, "visitor_language", visitorContext.visitor_language, 32);
+    appendFormValue(formData, "visitor_timezone", visitorContext.visitor_timezone, 80);
 
     state.sending = true;
     ui.send.disabled = true;
@@ -981,10 +981,13 @@
       });
   }
 
-  function appendFormValue(formData, key, value) {
+  function appendFormValue(formData, key, value, maxLength) {
     var normalized = String(value || "").trim();
     if (normalized === "") {
       return;
+    }
+    if (typeof maxLength === "number" && maxLength > 0 && normalized.length > maxLength) {
+      normalized = normalized.slice(0, maxLength);
     }
     formData.append(key, normalized);
   }
