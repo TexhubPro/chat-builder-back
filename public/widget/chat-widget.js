@@ -156,42 +156,61 @@
 
     var style = document.createElement("style");
     style.textContent = [
-      ".texhub-widget-wrap{position:fixed;z-index:2147483000;display:flex;flex-direction:column;align-items:flex-end;gap:12px;font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;}",
-      ".texhub-widget-wrap.left{left:20px;right:auto;align-items:flex-start;}",
-      ".texhub-widget-wrap.right{right:20px;left:auto;align-items:flex-end;}",
-      ".texhub-widget-launcher{height:56px;min-width:56px;padding:0 16px;border:none;border-radius:999px;color:#fff;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:8px;box-shadow:0 16px 32px rgba(15,23,42,.2);}",
+      ".texhub-widget-wrap{position:fixed !important;bottom:16px !important;z-index:2147483647 !important;display:flex !important;flex-direction:column !important;align-items:flex-end !important;gap:12px !important;font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif !important;}",
+      ".texhub-widget-wrap.left{left:16px !important;right:auto !important;align-items:flex-start !important;}",
+      ".texhub-widget-wrap.right{right:16px !important;left:auto !important;align-items:flex-end !important;}",
+      ".texhub-widget-launcher{height:56px;min-width:56px;padding:0 18px;border:none;border-radius:999px;color:#fff;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:8px;box-shadow:0 16px 32px rgba(15,23,42,.2);}",
       ".texhub-widget-launcher:disabled{opacity:.7;cursor:not-allowed;}",
-      ".texhub-widget-panel{width:min(360px,calc(100vw - 24px));height:min(560px,calc(100vh - 100px));border-radius:18px;overflow:hidden;display:flex;flex-direction:column;border:1px solid rgba(148,163,184,.35);box-shadow:0 24px 60px rgba(15,23,42,.24);background:#fff;}",
+      ".texhub-widget-panel{width:min(420px,calc(100vw - 24px));height:min(760px,calc(100vh - 24px));border-radius:24px;overflow:hidden;display:flex;flex-direction:column;border:1px solid rgba(148,163,184,.35);box-shadow:0 24px 60px rgba(15,23,42,.24);background:#fff;}",
       ".texhub-widget-panel.hidden{display:none;}",
-      ".texhub-widget-header{padding:14px 16px;display:flex;align-items:center;justify-content:space-between;gap:8px;border-bottom:1px solid rgba(148,163,184,.25);}",
-      ".texhub-widget-header-title{font-size:16px;font-weight:700;line-height:1.3;margin:0;color:#0f172a;}",
-      ".texhub-widget-header-status{font-size:12px;color:#64748b;margin:2px 0 0;}",
-      ".texhub-widget-close{border:none;background:transparent;color:#64748b;font-size:22px;line-height:1;cursor:pointer;padding:2px 4px;border-radius:8px;}",
+      ".texhub-widget-header{padding:22px 24px;display:flex;align-items:flex-start;justify-content:space-between;gap:8px;border-bottom:1px solid rgba(148,163,184,.25);background:#fff;}",
+      ".texhub-widget-header-title{font-size:22px;font-weight:800;line-height:1.2;margin:0;color:#0f172a;}",
+      ".texhub-widget-header-status{font-size:18px;color:#64748b;font-weight:600;margin:4px 0 0;}",
+      ".texhub-widget-close{border:none;background:transparent;color:#64748b;font-size:42px;line-height:1;cursor:pointer;padding:0 2px;border-radius:8px;}",
       ".texhub-widget-close:hover{background:rgba(148,163,184,.18);}",
-      ".texhub-widget-body{flex:1;overflow:auto;padding:14px 12px;display:flex;flex-direction:column;gap:10px;background:#f8fafc;}",
-      ".texhub-widget-empty{font-size:13px;color:#64748b;padding:8px 6px;}",
-      ".texhub-widget-msg{max-width:86%;border-radius:14px;padding:10px 12px;font-size:14px;line-height:1.35;word-break:break-word;}",
+      ".texhub-widget-body{flex:1;overflow:auto;padding:20px;display:flex;flex-direction:column;gap:12px;background:#F8FAFC;}",
+      ".texhub-widget-empty{font-size:42px;line-height:1.3;color:#64748b;padding:14px 18px;}",
+      ".texhub-widget-msg{max-width:92%;border-radius:24px;padding:16px 18px;font-size:18px;line-height:1.45;word-break:break-word;}",
       ".texhub-widget-msg.in{align-self:flex-start;background:#fff;color:#0f172a;border:1px solid rgba(148,163,184,.28);}",
       ".texhub-widget-msg.out{align-self:flex-end;background:#dbeafe;color:#0f172a;}",
-      ".texhub-widget-msg img{max-width:100%;display:block;border-radius:10px;}",
-      ".texhub-widget-meta{display:block;font-size:11px;color:#64748b;margin-top:6px;}",
-      ".texhub-widget-footer{border-top:1px solid rgba(148,163,184,.25);padding:10px;display:flex;flex-direction:column;gap:8px;background:#fff;}",
-      ".texhub-widget-input{width:100%;min-height:42px;max-height:120px;resize:vertical;border:1px solid rgba(148,163,184,.4);border-radius:12px;padding:10px 12px;font-size:14px;line-height:1.35;color:#0f172a;outline:none;background:#fff;}",
+      ".texhub-widget-msg img{max-width:100%;display:block;border-radius:14px;}",
+      ".texhub-widget-meta{display:block;font-size:14px;color:#64748b;margin-top:8px;}",
+      ".texhub-widget-footer{border-top:1px solid rgba(148,163,184,.25);padding:12px;display:flex;flex-direction:column;gap:8px;background:#fff;}",
+      ".texhub-widget-input{width:100%;min-height:74px;max-height:200px;resize:vertical;border:2px solid rgba(148,163,184,.4);border-radius:22px;padding:16px 18px;font-size:44px;line-height:1.35;color:#0f172a;outline:none;background:#fff;}",
       ".texhub-widget-input:focus{border-color:#1677FF;box-shadow:0 0 0 3px rgba(22,119,255,.12);}",
       ".texhub-widget-actions{display:flex;align-items:center;gap:8px;}",
-      ".texhub-widget-file{position:relative;overflow:hidden;border:1px solid rgba(148,163,184,.4);border-radius:10px;padding:8px 10px;font-size:12px;color:#334155;background:#fff;cursor:pointer;white-space:nowrap;}",
+      ".texhub-widget-file{position:relative;overflow:hidden;border:2px solid rgba(148,163,184,.4);border-radius:18px;padding:10px 18px;font-size:18px;font-weight:600;color:#334155;background:#fff;cursor:pointer;white-space:nowrap;}",
       ".texhub-widget-file input{position:absolute;inset:0;opacity:0;cursor:pointer;}",
-      ".texhub-widget-send{flex:1;border:none;border-radius:10px;color:#fff;font-size:14px;font-weight:600;height:38px;cursor:pointer;}",
+      ".texhub-widget-send{flex:1;border:none;border-radius:18px;color:#fff;font-size:20px;font-weight:700;height:54px;cursor:pointer;}",
       ".texhub-widget-send:disabled{opacity:.65;cursor:not-allowed;}",
-      ".texhub-widget-file-name{font-size:12px;color:#64748b;padding:0 2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}",
-      "@media (max-width:640px){.texhub-widget-wrap{left:12px!important;right:12px!important;align-items:stretch!important}.texhub-widget-panel{width:100%;height:min(72vh,560px)}.texhub-widget-launcher{align-self:flex-end}}"
+      ".texhub-widget-file-name{font-size:14px;color:#64748b;padding:0 2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}",
+      ".texhub-widget-error{display:none;font-size:13px;line-height:1.35;color:#B42318;background:#FEE4E2;border:1px solid #FDA29B;padding:8px 10px;border-radius:12px;}",
+      "@media (max-width:640px){.texhub-widget-wrap{left:12px!important;right:12px!important;bottom:12px!important;align-items:stretch!important}.texhub-widget-panel{width:100%;height:min(82vh,760px)}.texhub-widget-header{padding:16px}.texhub-widget-header-title{font-size:20px}.texhub-widget-header-status{font-size:16px}.texhub-widget-body{padding:14px}.texhub-widget-empty{font-size:18px;padding:8px}.texhub-widget-msg{font-size:17px;padding:14px 16px}.texhub-widget-input{font-size:16px;min-height:62px}.texhub-widget-send{height:50px;font-size:18px}}"
     ].join("");
 
     var wrapper = document.createElement("div");
     wrapper.className = "texhub-widget-wrap right";
+    wrapper.style.position = "fixed";
+    wrapper.style.bottom = "16px";
+    wrapper.style.right = "16px";
+    wrapper.style.left = "auto";
+    wrapper.style.zIndex = "2147483000";
+    wrapper.style.display = "flex";
+    wrapper.style.flexDirection = "column";
+    wrapper.style.alignItems = "flex-end";
+    wrapper.style.gap = "12px";
 
     var panel = document.createElement("div");
     panel.className = "texhub-widget-panel hidden";
+    panel.style.display = "none";
+    panel.style.width = "min(360px,calc(100vw - 24px))";
+    panel.style.height = "min(560px,calc(100vh - 100px))";
+    panel.style.border = "1px solid rgba(148,163,184,.35)";
+    panel.style.borderRadius = "18px";
+    panel.style.overflow = "hidden";
+    panel.style.boxShadow = "0 24px 60px rgba(15,23,42,.24)";
+    panel.style.background = "#fff";
+    panel.style.flexDirection = "column";
 
     var header = document.createElement("div");
     header.className = "texhub-widget-header";
@@ -270,6 +289,23 @@
     launcher.type = "button";
     launcher.className = "texhub-widget-launcher";
     launcher.textContent = state.config.settings.launcher_label;
+    launcher.style.height = "56px";
+    launcher.style.minWidth = "56px";
+    launcher.style.padding = "0 16px";
+    launcher.style.border = "none";
+    launcher.style.borderRadius = "999px";
+    launcher.style.color = "#ffffff";
+    launcher.style.background = "#1677FF";
+    launcher.style.fontWeight = "600";
+    launcher.style.cursor = "pointer";
+    launcher.style.display = "inline-flex";
+    launcher.style.alignItems = "center";
+    launcher.style.justifyContent = "center";
+    launcher.style.gap = "8px";
+    launcher.style.boxShadow = "0 16px 32px rgba(15,23,42,.2)";
+
+    var error = document.createElement("div");
+    error.className = "texhub-widget-error";
 
     wrapper.appendChild(panel);
     wrapper.appendChild(launcher);
@@ -292,7 +328,8 @@
       input: input,
       fileInput: fileInput,
       fileName: fileName,
-      send: send
+      send: send,
+      error: error
     };
   }
 
@@ -338,12 +375,14 @@
 
     if (state.isOpen) {
       ui.panel.classList.remove("hidden");
+      ui.panel.style.display = "flex";
       ui.launcher.textContent = "−";
       safeStorageSet(storageOpenStateKey, "1");
       ui.input.focus();
       fetchMessages();
     } else {
       ui.panel.classList.add("hidden");
+      ui.panel.style.display = "none";
       ui.launcher.textContent = state.config.settings.launcher_label;
       safeStorageSet(storageOpenStateKey, "0");
     }
@@ -399,6 +438,16 @@
 
     ui.wrapper.classList.remove("left", "right");
     ui.wrapper.classList.add(position);
+    ui.wrapper.style.bottom = "20px";
+    if (position === "left") {
+      ui.wrapper.style.left = "20px";
+      ui.wrapper.style.right = "auto";
+      ui.wrapper.style.alignItems = "flex-start";
+    } else {
+      ui.wrapper.style.right = "20px";
+      ui.wrapper.style.left = "auto";
+      ui.wrapper.style.alignItems = "flex-end";
+    }
 
     ui.launcher.style.background = color;
     ui.send.style.background = color;
