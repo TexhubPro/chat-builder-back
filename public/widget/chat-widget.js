@@ -279,6 +279,7 @@
       status: status,
       close: close,
       body: body,
+      footer: footer,
       empty: empty,
       input: input,
       fileInput: fileInput,
@@ -378,6 +379,11 @@
   }
 
   function applyConfigToUi() {
+    if (!ui || !ui.wrapper || !ui.panel || !ui.launcher || !ui.send || !ui.title || !ui.status || !ui.input || !ui.body || !ui.empty || !ui.footer) {
+      debugLog("apply_config_skipped_ui_not_ready");
+      return;
+    }
+
     var settings = state.config.settings || {};
     var position = settings.position === "bottom-left" ? "left" : "right";
     var theme = settings.theme === "dark" ? "dark" : "light";
