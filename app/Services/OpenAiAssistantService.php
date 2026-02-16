@@ -166,7 +166,7 @@ class OpenAiAssistantService
 
         $payload = [
             'name' => $assistant->name,
-            'model' => (string) config('openai.assistant.defaults.model', 'gpt-4o'),
+            'model' => (string) config('openai.assistant.defaults.model', 'gpt-4.1'),
             'instructions' => $this->composeInstructions($assistant, $settings),
         ];
 

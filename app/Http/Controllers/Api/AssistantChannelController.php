@@ -403,7 +403,7 @@ class AssistantChannelController extends Controller
         $apiBaseUrl = url('/api/widget');
         $embedScriptTag = $widgetKey === null
             ? null
-            : '<script src="'.$scriptUrl.'" data-widget-key="'.$widgetKey.'" defer></script>';
+            : '<script src="'.$scriptUrl.'" data-widget-key="'.$widgetKey.'" data-api-base="'.$apiBaseUrl.'" defer></script>';
 
         return [
             'widget_key' => $widgetKey,

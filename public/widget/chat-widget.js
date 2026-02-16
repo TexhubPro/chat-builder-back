@@ -46,7 +46,7 @@
 
   var state = {
     sessionId: loadOrCreateSessionId(),
-    isOpen: localStorage.getItem(storageOpenStateKey) === "1",
+    isOpen: safeStorageGet(storageOpenStateKey) === "1",
     loading: false,
     sending: false,
     config: {
@@ -69,16 +69,30 @@
     bootstrapDone: false
   };
 
-  var ui = createUi();
-  bindUi();
-  applyConfigToUi();
-  togglePanel(state.isOpen);
-  debugLog("ui_ready", {
-    is_open: state.isOpen,
-    session_id: state.sessionId
-  });
+  var ui = null;
+  onDomReady(initWidget);
 
-  bootstrap();
+  function initWidget() {
+    if (ui) {
+      return;
+    }
+
+    if (document.getElementById("texhub-widget-root-" + widgetKey)) {
+      debugLog("ui_skipped_already_exists");
+      return;
+    }
+
+    ui = createUi();
+    bindUi();
+    applyConfigToUi();
+    togglePanel(state.isOpen);
+    debugLog("ui_ready", {
+      is_open: state.isOpen,
+      session_id: state.sessionId
+    });
+
+    bootstrap();
+  }
 
   function bootstrap() {
     if (state.bootstrapDone) {
@@ -104,18 +118,18 @@
   }
 
   function loadOrCreateSessionId() {
-    var existing = (localStorage.getItem(storageSessionKey) || "").trim();
+    var existing = (safeStorageGet(storageSessionKey) || "").trim();
     if (existing) {
       return existing;
     }
 
     var generated = "ws_" + randomId(28);
-      localStorage.setItem(storageSessionKey, generated);
-      debugLog("session_created", {
-        session_id: generated
-      });
-      return generated;
-    }
+    safeStorageSet(storageSessionKey, generated);
+    debugLog("session_created", {
+      session_id: generated
+    });
+    return generated;
+  }
 
   function randomId(length) {
     var chars = "abcdefghijklmnopqrstuvwxyz0123456789";
@@ -316,13 +330,13 @@
     if (state.isOpen) {
       ui.panel.classList.remove("hidden");
       ui.launcher.textContent = "−";
-      localStorage.setItem(storageOpenStateKey, "1");
+      safeStorageSet(storageOpenStateKey, "1");
       ui.input.focus();
       fetchMessages();
     } else {
       ui.panel.classList.add("hidden");
       ui.launcher.textContent = state.config.settings.launcher_label;
-      localStorage.setItem(storageOpenStateKey, "0");
+      safeStorageSet(storageOpenStateKey, "0");
     }
   }
 
@@ -641,6 +655,34 @@
   function parseBooleanFlag(value) {
     var normalized = String(value || "").trim().toLowerCase();
     return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+  }
+
+  function onDomReady(callback) {
+    if (document.readyState === "complete" || document.readyState === "interactive") {
+      callback();
+      return;
+    }
+
+    document.addEventListener("DOMContentLoaded", function handleReady() {
+      callback();
+    }, { once: true });
+  }
+
+  function safeStorageGet(key) {
+    try {
+      return window.localStorage.getItem(key);
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function safeStorageSet(key, value) {
+    try {
+      window.localStorage.setItem(key, value);
+      return true;
+    } catch (_error) {
+      return false;
+    }
   }
 
   function httpError(message, status) {
