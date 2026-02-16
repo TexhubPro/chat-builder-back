@@ -243,6 +243,102 @@ test('widget public endpoint appends repeated inbound messages into same chat', 
         ->count())->toBe(0);
 });
 
+test('widget usage counts one active chat within 48-hour window and recounts after window', function () {
+    [, $company, $assistant] = widgetContext();
+
+    config()->set('chats.widget.auto_reply_enabled', false);
+    config()->set('billing.chat_usage_window_hours', 48);
+
+    AssistantChannel::query()->create([
+        'user_id' => $company->user_id,
+        'company_id' => $company->id,
+        'assistant_id' => $assistant->id,
+        'channel' => AssistantChannel::CHANNEL_WIDGET,
+        'name' => 'Web Widget',
+        'external_account_id' => 'widget-usage-window',
+        'is_active' => true,
+        'credentials' => [
+            'provider' => 'widget',
+            'widget_key' => 'wdg_usage_window',
+        ],
+    ]);
+
+    $this
+        ->postJson('/api/widget/wdg_usage_window/messages', [
+            'session_id' => 'session-usage-window-1',
+            'text' => 'first',
+        ])
+        ->assertCreated();
+
+    $this
+        ->postJson('/api/widget/wdg_usage_window/messages', [
+            'session_id' => 'session-usage-window-1',
+            'text' => 'second in same window',
+        ])
+        ->assertCreated();
+
+    $subscription = $company->subscription()->firstOrFail()->refresh();
+    expect((int) $subscription->chat_count_current_period)->toBe(1);
+
+    $this->travel(2)->days();
+    $this->travel(1)->minute();
+
+    $this
+        ->postJson('/api/widget/wdg_usage_window/messages', [
+            'session_id' => 'session-usage-window-1',
+            'text' => 'third after 48h',
+        ])
+        ->assertCreated();
+
+    $subscription = $company->subscription()->firstOrFail()->refresh();
+    expect((int) $subscription->chat_count_current_period)->toBe(2);
+
+    $this->travelBack();
+});
+
+test('widget usage is not counted for inactive chat status', function () {
+    [, $company, $assistant] = widgetContext();
+
+    config()->set('chats.widget.auto_reply_enabled', false);
+    config()->set('billing.chat_usage_window_hours', 48);
+
+    $assistantChannel = AssistantChannel::query()->create([
+        'user_id' => $company->user_id,
+        'company_id' => $company->id,
+        'assistant_id' => $assistant->id,
+        'channel' => AssistantChannel::CHANNEL_WIDGET,
+        'name' => 'Web Widget',
+        'external_account_id' => 'widget-usage-inactive',
+        'is_active' => true,
+        'credentials' => [
+            'provider' => 'widget',
+            'widget_key' => 'wdg_usage_inactive',
+        ],
+    ]);
+
+    Chat::query()->create([
+        'user_id' => $company->user_id,
+        'company_id' => $company->id,
+        'assistant_id' => $assistant->id,
+        'assistant_channel_id' => $assistantChannel->id,
+        'channel' => AssistantChannel::CHANNEL_WIDGET,
+        'channel_chat_id' => 'session-usage-inactive-1',
+        'channel_user_id' => 'session-usage-inactive-1',
+        'name' => 'Inactive visitor',
+        'status' => Chat::STATUS_CLOSED,
+    ]);
+
+    $this
+        ->postJson('/api/widget/wdg_usage_inactive/messages', [
+            'session_id' => 'session-usage-inactive-1',
+            'text' => 'should not be billed',
+        ])
+        ->assertCreated();
+
+    $subscription = $company->subscription()->firstOrFail()->refresh();
+    expect((int) $subscription->chat_count_current_period)->toBe(0);
+});
+
 test('widget public endpoint accepts image uploads', function () {
     Storage::fake('public');
 

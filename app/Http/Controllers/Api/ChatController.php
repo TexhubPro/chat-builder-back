@@ -731,7 +731,12 @@ class ChatController extends Controller
         $this->updateChatSnapshotFromMessage($chat, $message, $isCustomerInbound);
 
         if ($isCustomerInbound) {
-            $this->subscriptionService()->incrementChatUsage($company, 1);
+            $this->subscriptionService()->incrementChatUsageForChat(
+                $company,
+                $chat,
+                1,
+                $message->sent_at,
+            );
         }
 
         return response()->json([

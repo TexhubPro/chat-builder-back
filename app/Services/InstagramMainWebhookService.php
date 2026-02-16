@@ -117,7 +117,14 @@ class InstagramMainWebhookService
         $this->touchChatSnapshot($chat, $lastInbound, incrementUnreadBy: count($createdInboundMessages));
 
         [$hasActiveSubscription, $hasRemainingIncludedChats] = $this->subscriptionStateForAutoReply($company);
-        $this->subscriptionService->incrementChatUsage($company, 1);
+        if ($hasReplyableContent) {
+            $this->subscriptionService->incrementChatUsageForChat(
+                $company,
+                $chat,
+                1,
+                $lastInbound->sent_at,
+            );
+        }
 
         if (! $this->shouldAutoReply(
             $chat,

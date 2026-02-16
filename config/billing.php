@@ -3,6 +3,7 @@
 return [
     'default_plan_code' => env('BILLING_DEFAULT_PLAN_CODE', 'starter-monthly'),
     'default_currency' => env('BILLING_DEFAULT_CURRENCY', 'TJS'),
+    'chat_usage_window_hours' => env('BILLING_CHAT_USAGE_WINDOW_HOURS', 48),
     'alif' => [
         'mode' => env('BILLING_ALIF_MODE', 'local'),
         'callback_url' => env('BILLING_ALIF_CALLBACK_URL', rtrim((string) env('APP_URL'), '/') . '/api/billing/alif/callback'),

@@ -160,7 +160,12 @@ class ChatMessageController extends Controller
 
         if ($isCustomerInbound) {
             [$hasActiveSubscription, $hasRemainingIncludedChats] = $this->subscriptionStateForAutoReply($company);
-            $this->subscriptionService()->incrementChatUsage($company, 1);
+            $this->subscriptionService()->incrementChatUsageForChat(
+                $company,
+                $chat,
+                1,
+                $message->sent_at,
+            );
         }
 
         $assistantMessage = null;
@@ -273,7 +278,12 @@ class ChatMessageController extends Controller
             'read_at' => now(),
         ]);
 
-        $this->subscriptionService()->incrementChatUsage($company, 1);
+        $this->subscriptionService()->incrementChatUsageForChat(
+            $company,
+            $chat,
+            1,
+            $incomingMessage->sent_at,
+        );
 
         $responseText = $this->generateAssistantResponse($company, $assistant, $chat, $prompt);
 

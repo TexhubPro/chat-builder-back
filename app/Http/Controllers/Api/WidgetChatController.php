@@ -276,7 +276,12 @@ class WidgetChatController extends Controller
         $this->updateChatSnapshotFromMessage($chat, $message, true);
 
         [$hasActiveSubscription, $hasRemainingIncludedChats] = $this->subscriptionStateForAutoReply($company);
-        $this->subscriptionService()->incrementChatUsage($company, 1);
+        $this->subscriptionService()->incrementChatUsageForChat(
+            $company,
+            $chat,
+            1,
+            $message->sent_at,
+        );
 
         $assistantMessage = null;
         $hasReplyableContent = $normalizedText !== null || $filePayload !== null;
