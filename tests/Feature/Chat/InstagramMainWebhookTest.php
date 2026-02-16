@@ -1038,3 +1038,38 @@ test('instagram main webhook ignores read events and does not store message seen
         ->count();
     expect($messagesCount)->toBe(0);
 });
+
+test('instagram main webhook fallback reply does not leak internal prompt text', function () {
+    [, $company] = instagramWebhookContext();
+
+    config()->set('openai.assistant.api_key', 'test-openai-key');
+    config()->set('meta.instagram.auto_reply_enabled', true);
+
+    $this->mock(OpenAiAssistantClient::class, function (MockInterface $mock): void {
+        $mock->shouldReceive('createThread')->once()->andReturn('thread_instagram_fallback_1');
+        $mock->shouldReceive('sendTextMessage')->once()->andReturn('message_instagram_fallback_1');
+        $mock->shouldReceive('runThreadAndGetResponse')->once()->andReturn('');
+    });
+
+    InstagramFacade::shouldReceive('sendTextMessage')
+        ->once()
+        ->andReturn('out_mid_fallback_1');
+
+    $this->postJson('/instagram-main-webhook', instagramMainWebhookPayload([
+        'mid' => 'in_mid_fallback_1',
+        'text' => 'салом',
+    ]))
+        ->assertOk()
+        ->assertJsonPath('ok', true);
+
+    $chat = Chat::query()->where('company_id', $company->id)->where('channel', 'instagram')->firstOrFail();
+    $assistantMessage = ChatMessage::query()
+        ->where('chat_id', $chat->id)
+        ->where('sender_type', ChatMessage::SENDER_ASSISTANT)
+        ->where('direction', ChatMessage::DIRECTION_OUTBOUND)
+        ->latest('id')
+        ->firstOrFail();
+
+    expect((string) $assistantMessage->text)->toBe('Извините, сейчас не удалось сформировать ответ. Пожалуйста, попробуйте еще раз.');
+    expect((string) $assistantMessage->text)->not->toContain('Incoming customer message');
+});

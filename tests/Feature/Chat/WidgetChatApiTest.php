@@ -292,6 +292,46 @@ test('widget public endpoint accepts image uploads', function () {
     Storage::disk('public')->assertExists($storagePath);
 });
 
+test('widget public endpoint fallback reply does not leak internal prompt text', function () {
+    [, $company, $assistant] = widgetContext();
+
+    config()->set('openai.assistant.api_key', 'test-openai-key');
+    config()->set('chats.widget.auto_reply_enabled', true);
+
+    AssistantChannel::query()->create([
+        'user_id' => $company->user_id,
+        'company_id' => $company->id,
+        'assistant_id' => $assistant->id,
+        'channel' => AssistantChannel::CHANNEL_WIDGET,
+        'name' => 'Web Widget',
+        'external_account_id' => 'widget-fallback',
+        'is_active' => true,
+        'credentials' => [
+            'provider' => 'widget',
+            'widget_key' => 'wdg_test_key_fallback',
+        ],
+    ]);
+
+    $this->mock(OpenAiAssistantClient::class, function (MockInterface $mock): void {
+        $mock->shouldReceive('createThread')->once()->andReturn('thread_widget_fallback_1');
+        $mock->shouldReceive('sendTextMessage')->once()->andReturn('msg_widget_fallback_1');
+        $mock->shouldReceive('runThreadAndGetResponse')->once()->andReturn('');
+    });
+
+    $response = $this
+        ->postJson('/api/widget/wdg_test_key_fallback/messages', [
+            'session_id' => 'session-fallback-1',
+            'text' => 'салом',
+        ])
+        ->assertCreated()
+        ->json();
+
+    expect((string) ($response['assistant_message']['text'] ?? ''))
+        ->toBe('Извините, сейчас не удалось сформировать ответ. Пожалуйста, попробуйте еще раз.');
+    expect((string) ($response['assistant_message']['text'] ?? ''))
+        ->not->toContain('Incoming customer message');
+});
+
 test('widget public endpoints expose permissive cors headers for external origins', function () {
     [, $company, $assistant] = widgetContext();
 

@@ -384,3 +384,46 @@ test('telegram webhook appends repeated message id into same chat', function () 
     expect($inboundMessages[0]->channel_message_id)->toBe('1003:text');
     expect($inboundMessages[1]->channel_message_id)->toBe('1003:text-1710000000000');
 });
+
+test('telegram webhook fallback reply does not leak internal prompt text', function () {
+    [, $company, , $assistantChannel] = telegramWebhookContext();
+
+    config()->set('services.telegram.bot_api_base', 'https://api.telegram.org');
+    config()->set('services.telegram.auto_reply_enabled', true);
+    config()->set('openai.assistant.api_key', 'test-openai-key');
+
+    $this->mock(OpenAiAssistantClient::class, function (MockInterface $mock): void {
+        $mock->shouldReceive('createThread')->once()->andReturn('thread_telegram_fallback_1');
+        $mock->shouldReceive('sendTextMessage')->once()->andReturn('message_telegram_fallback_1');
+        $mock->shouldReceive('runThreadAndGetResponse')->once()->andReturn('');
+    });
+
+    Http::fake([
+        'https://api.telegram.org/bottelegram-token/sendMessage' => Http::response([
+            'ok' => true,
+            'result' => [
+                'message_id' => 9010,
+            ],
+        ], 200),
+    ]);
+
+    $this
+        ->withHeader('X-Telegram-Bot-Api-Secret-Token', 'tg-secret-123')
+        ->postJson('/api/integrations/telegram/webhook/'.$assistantChannel->id, telegramWebhookPayload([
+            'message_id' => 1011,
+            'text' => 'салом',
+        ]))
+        ->assertOk()
+        ->assertJsonPath('ok', true);
+
+    $chat = Chat::query()->where('company_id', $company->id)->where('channel', 'telegram')->firstOrFail();
+    $assistantMessage = ChatMessage::query()
+        ->where('chat_id', $chat->id)
+        ->where('sender_type', ChatMessage::SENDER_ASSISTANT)
+        ->where('direction', ChatMessage::DIRECTION_OUTBOUND)
+        ->latest('id')
+        ->firstOrFail();
+
+    expect((string) $assistantMessage->text)->toBe('Извините, сейчас не удалось сформировать ответ. Пожалуйста, попробуйте еще раз.');
+    expect((string) $assistantMessage->text)->not->toContain('Incoming customer message');
+});

@@ -864,9 +864,7 @@ class WidgetChatController extends Controller
 
     private function fallbackAssistantText(Assistant $assistant, string $prompt): string
     {
-        $safePrompt = Str::limit(trim($prompt), 220, '...');
-
-        return '['.$assistant->name.'] Received: '.$safePrompt;
+        return 'Извините, сейчас не удалось сформировать ответ. Пожалуйста, попробуйте еще раз.';
     }
 
     private function storeWidgetImage(UploadedFile $file): array
