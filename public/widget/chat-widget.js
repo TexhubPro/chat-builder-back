@@ -54,7 +54,7 @@
 
   var state = {
     sessionId: loadOrCreateSessionId(),
-    isOpen: safeStorageGet(storageOpenStateKey) === "1",
+    isOpen: safeStorageGet(storageOpenStateKey) !== "0",
     loading: false,
     sending: false,
     config: {
@@ -93,6 +93,7 @@
     ui = createUi();
     bindUi();
     applyConfigToUi();
+    applyChannelAvailability();
     togglePanel(state.isOpen);
     debugLog("ui_ready", {
       is_open: state.isOpen,
@@ -169,14 +170,14 @@
       ".texhub-widget-close{border:none;background:transparent;color:#64748b;font-size:42px;line-height:1;cursor:pointer;padding:0 2px;border-radius:8px;}",
       ".texhub-widget-close:hover{background:rgba(148,163,184,.18);}",
       ".texhub-widget-body{flex:1;overflow:auto;padding:20px;display:flex;flex-direction:column;gap:12px;background:#F8FAFC;}",
-      ".texhub-widget-empty{font-size:42px;line-height:1.3;color:#64748b;padding:14px 18px;}",
+      ".texhub-widget-empty{font-size:18px;line-height:1.35;color:#64748b;padding:12px 14px;}",
       ".texhub-widget-msg{max-width:92%;border-radius:24px;padding:16px 18px;font-size:18px;line-height:1.45;word-break:break-word;}",
       ".texhub-widget-msg.in{align-self:flex-start;background:#fff;color:#0f172a;border:1px solid rgba(148,163,184,.28);}",
       ".texhub-widget-msg.out{align-self:flex-end;background:#dbeafe;color:#0f172a;}",
       ".texhub-widget-msg img{max-width:100%;display:block;border-radius:14px;}",
       ".texhub-widget-meta{display:block;font-size:14px;color:#64748b;margin-top:8px;}",
       ".texhub-widget-footer{border-top:1px solid rgba(148,163,184,.25);padding:12px;display:flex;flex-direction:column;gap:8px;background:#fff;}",
-      ".texhub-widget-input{width:100%;min-height:74px;max-height:200px;resize:vertical;border:2px solid rgba(148,163,184,.4);border-radius:22px;padding:16px 18px;font-size:44px;line-height:1.35;color:#0f172a;outline:none;background:#fff;}",
+      ".texhub-widget-input{width:100%;min-height:74px;max-height:200px;resize:vertical;border:2px solid rgba(148,163,184,.4);border-radius:22px;padding:16px 18px;font-size:18px;line-height:1.35;color:#0f172a;outline:none;background:#fff;}",
       ".texhub-widget-input:focus{border-color:#1677FF;box-shadow:0 0 0 3px rgba(22,119,255,.12);}",
       ".texhub-widget-actions{display:flex;align-items:center;gap:8px;}",
       ".texhub-widget-file{position:relative;overflow:hidden;border:2px solid rgba(148,163,184,.4);border-radius:18px;padding:10px 18px;font-size:18px;font-weight:600;color:#334155;background:#fff;cursor:pointer;white-space:nowrap;}",
@@ -259,6 +260,9 @@
     var actions = document.createElement("div");
     actions.className = "texhub-widget-actions";
 
+    var error = document.createElement("div");
+    error.className = "texhub-widget-error";
+
     var fileButton = document.createElement("label");
     fileButton.className = "texhub-widget-file";
     fileButton.textContent = "Фото";
@@ -279,6 +283,7 @@
 
     footer.appendChild(input);
     footer.appendChild(fileName);
+    footer.appendChild(error);
     footer.appendChild(actions);
 
     panel.appendChild(header);
@@ -303,9 +308,6 @@
     launcher.style.justifyContent = "center";
     launcher.style.gap = "8px";
     launcher.style.boxShadow = "0 16px 32px rgba(15,23,42,.2)";
-
-    var error = document.createElement("div");
-    error.className = "texhub-widget-error";
 
     wrapper.appendChild(panel);
     wrapper.appendChild(launcher);
@@ -377,13 +379,17 @@
       ui.panel.classList.remove("hidden");
       ui.panel.style.display = "flex";
       ui.launcher.textContent = "−";
+      ui.launcher.setAttribute("aria-expanded", "true");
       safeStorageSet(storageOpenStateKey, "1");
-      ui.input.focus();
+      if (!ui.input.disabled) {
+        ui.input.focus();
+      }
       fetchMessages();
     } else {
       ui.panel.classList.add("hidden");
       ui.panel.style.display = "none";
       ui.launcher.textContent = state.config.settings.launcher_label;
+      ui.launcher.setAttribute("aria-expanded", "false");
       safeStorageSet(storageOpenStateKey, "0");
     }
   }
@@ -413,6 +419,7 @@
         }
 
         applyConfigToUi();
+        applyChannelAvailability();
         debugLog("config_fetch_success", {
           is_active: !!state.config.is_active
         });
@@ -479,6 +486,64 @@
       ui.empty.style.color = "#64748B";
       ui.empty.textContent = settings.welcome_message || "Здравствуйте! Напишите ваш вопрос.";
     }
+
+    if (!isWidgetActive()) {
+      ui.status.style.color = theme === "dark" ? "#FCA5A5" : "#B42318";
+    }
+  }
+
+  function isWidgetActive() {
+    return !state.config || state.config.is_active !== false;
+  }
+
+  function applyChannelAvailability() {
+    if (!ui || !ui.input || !ui.fileInput || !ui.send || !ui.status) {
+      return;
+    }
+
+    var active = isWidgetActive();
+
+    ui.status.textContent = active ? "Онлайн" : "Офлайн";
+    ui.input.disabled = !active;
+    ui.fileInput.disabled = !active;
+    ui.send.disabled = !active || state.sending;
+
+    if (!active) {
+      setInlineError("Чат временно недоступен. Попробуйте позже.", true);
+    } else if (ui.error && ui.error.dataset && ui.error.dataset.persistent === "1") {
+      clearInlineError(true);
+    }
+  }
+
+  function setInlineError(message, persistent) {
+    if (!ui || !ui.error) {
+      return;
+    }
+
+    var safeMessage = String(message || "").trim();
+
+    if (safeMessage === "") {
+      clearInlineError(true);
+      return;
+    }
+
+    ui.error.textContent = safeMessage;
+    ui.error.style.display = "block";
+    ui.error.dataset.persistent = persistent ? "1" : "0";
+  }
+
+  function clearInlineError(force) {
+    if (!ui || !ui.error) {
+      return;
+    }
+
+    if (!force && ui.error.dataset && ui.error.dataset.persistent === "1") {
+      return;
+    }
+
+    ui.error.textContent = "";
+    ui.error.style.display = "none";
+    ui.error.dataset.persistent = "0";
   }
 
   function normalizeColor(value) {
@@ -634,9 +699,17 @@
     var text = (ui.input.value || "").trim();
     var file = state.fileToSend;
 
-    if (!text && !file) {
+    if (!isWidgetActive()) {
+      setInlineError("Чат временно недоступен. Попробуйте позже.", true);
       return;
     }
+
+    if (!text && !file) {
+      setInlineError("Введите сообщение или добавьте фото.", false);
+      return;
+    }
+
+    clearInlineError(true);
 
     var formData = new FormData();
     formData.append("session_id", state.sessionId);
@@ -666,7 +739,10 @@
     })
       .then(function (response) {
         if (!response.ok) {
-          throw httpError("Send message failed", response.status);
+          return parseResponseError(response)
+            .then(function (message) {
+              throw httpError(message || "Send message failed", response.status);
+            });
         }
 
         return response.json();
@@ -685,6 +761,7 @@
         state.fileToSend = null;
         ui.fileName.style.display = "none";
         ui.fileName.textContent = "";
+        clearInlineError(true);
 
         debugLog("send_success", {
           has_chat_message: !!(data && data.chat_message),
@@ -692,6 +769,7 @@
         });
       })
       .catch(function (error) {
+        setInlineError(error && error.message ? error.message : "Не удалось отправить сообщение.", false);
         debugLog("send_failed", {
           error: serializeError(error)
         });
@@ -699,8 +777,32 @@
       })
       .finally(function () {
         state.sending = false;
-        ui.send.disabled = false;
+        applyChannelAvailability();
         fetchMessages();
+      });
+  }
+
+  function parseResponseError(response) {
+    return response.text()
+      .then(function (text) {
+        var normalized = String(text || "").trim();
+        if (!normalized) {
+          return "";
+        }
+
+        try {
+          var payload = JSON.parse(normalized);
+          if (payload && typeof payload.message === "string" && payload.message.trim() !== "") {
+            return payload.message.trim();
+          }
+        } catch (_error) {
+          // ignore parse errors and fallback to raw text
+        }
+
+        return normalized.length > 220 ? (normalized.slice(0, 220) + "...") : normalized;
+      })
+      .catch(function () {
+        return "";
       });
   }
 
