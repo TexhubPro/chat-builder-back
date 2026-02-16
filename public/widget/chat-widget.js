@@ -160,61 +160,61 @@
 
     var style = document.createElement("style");
     style.textContent = [
-      ".texhub-widget-wrap{position:fixed !important;bottom:16px !important;z-index:2147483647 !important;display:flex !important;flex-direction:column !important;align-items:flex-end !important;gap:12px !important;font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif !important;}",
-      ".texhub-widget-wrap.left{left:16px !important;right:auto !important;align-items:flex-start !important;}",
-      ".texhub-widget-wrap.right{right:16px !important;left:auto !important;align-items:flex-end !important;}",
-      ".texhub-widget-launcher{height:56px;min-width:56px;padding:0 18px;border:none;border-radius:999px;color:#fff;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:8px;box-shadow:0 16px 32px rgba(15,23,42,.2);}",
+      ".texhub-widget-wrap{position:fixed !important;bottom:14px !important;z-index:2147483647 !important;display:flex !important;flex-direction:column !important;align-items:flex-end !important;gap:10px !important;font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif !important;}",
+      ".texhub-widget-wrap.left{left:14px !important;right:auto !important;align-items:flex-start !important;}",
+      ".texhub-widget-wrap.right{right:14px !important;left:auto !important;align-items:flex-end !important;}",
+      ".texhub-widget-launcher{height:52px;min-width:52px;padding:0 16px;border:none;border-radius:999px;color:#fff;font-size:15px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:8px;box-shadow:0 12px 26px rgba(15,23,42,.2);}",
       ".texhub-widget-launcher:disabled{opacity:.7;cursor:not-allowed;}",
-      ".texhub-widget-panel{width:min(390px,calc(100vw - 24px));height:min(620px,calc(100vh - 24px));border-radius:20px;overflow:hidden;display:flex;flex-direction:column;border:1px solid rgba(148,163,184,.35);box-shadow:0 20px 44px rgba(15,23,42,.2);background:#fff;}",
+      ".texhub-widget-panel{width:min(360px,calc(100vw - 20px));height:min(560px,calc(100vh - 20px));border-radius:18px;overflow:hidden;display:flex;flex-direction:column;border:1px solid rgba(148,163,184,.35);box-shadow:0 18px 40px rgba(15,23,42,.2);background:#fff;}",
       ".texhub-widget-panel.hidden{display:none;}",
-      ".texhub-widget-header{padding:14px 16px;display:flex;align-items:flex-start;justify-content:space-between;gap:8px;border-bottom:1px solid rgba(148,163,184,.25);background:#fff;}",
-      ".texhub-widget-header-title{font-size:17px;font-weight:800;line-height:1.25;margin:0;color:#0f172a;}",
-      ".texhub-widget-header-status{font-size:12px;color:#64748b;font-weight:600;margin:3px 0 0;}",
-      ".texhub-widget-close{border:none;background:transparent;color:#64748b;font-size:32px;line-height:1;cursor:pointer;padding:0 2px;border-radius:8px;}",
+      ".texhub-widget-header{padding:12px 14px;display:flex;align-items:flex-start;justify-content:space-between;gap:8px;border-bottom:1px solid rgba(148,163,184,.25);background:#fff;}",
+      ".texhub-widget-header-title{font-size:16px;font-weight:800;line-height:1.25;margin:0;color:#0f172a;}",
+      ".texhub-widget-header-status{font-size:11px;color:#64748b;font-weight:600;margin:2px 0 0;}",
+      ".texhub-widget-close{border:none;background:transparent;color:#64748b;font-size:30px;line-height:1;cursor:pointer;padding:0 2px;border-radius:8px;}",
       ".texhub-widget-close:hover{background:rgba(148,163,184,.18);}",
-      ".texhub-widget-body{flex:1;overflow:auto;padding:12px;display:flex;flex-direction:column;gap:8px;background:#F8FAFC;}",
-      ".texhub-widget-empty{font-size:16px;line-height:1.35;color:#64748b;padding:8px 10px;}",
-      ".texhub-widget-msg{max-width:92%;border-radius:18px;padding:12px 14px;font-size:15px;line-height:1.35;word-break:break-word;}",
+      ".texhub-widget-body{flex:1;overflow:auto;padding:10px;display:flex;flex-direction:column;gap:7px;background:#F8FAFC;}",
+      ".texhub-widget-empty{font-size:14px;line-height:1.35;color:#64748b;padding:8px 10px;}",
+      ".texhub-widget-msg{max-width:90%;border-radius:16px;padding:10px 12px;font-size:14px;line-height:1.35;word-break:break-word;}",
       ".texhub-widget-msg.in{align-self:flex-start;background:#fff;color:#0f172a;border:1px solid rgba(148,163,184,.28);}",
       ".texhub-widget-msg.out{align-self:flex-end;background:#dbeafe;color:#0f172a;}",
       ".texhub-widget-msg.pending{opacity:.78;}",
       ".texhub-widget-msg.failed{background:#FFF1F3;border-color:#FDA4AF;}",
       ".texhub-widget-msg img{max-width:100%;display:block;border-radius:14px;}",
-      ".texhub-widget-meta{display:block;font-size:12px;color:#64748b;margin-top:6px;}",
-      ".texhub-widget-footer{border-top:1px solid rgba(148,163,184,.25);padding:10px;display:flex;flex-direction:column;gap:8px;background:#fff;}",
-      ".texhub-widget-composer{display:flex;align-items:center;gap:8px;border:1px solid rgba(148,163,184,.45);border-radius:16px;background:#fff;padding:6px 8px;}",
-      ".texhub-widget-input{flex:1;min-height:38px;max-height:110px;resize:none;border:none;padding:8px 2px;font-size:15px;line-height:1.35;color:#0f172a;outline:none;background:transparent;}",
+      ".texhub-widget-meta{display:block;font-size:11px;color:#64748b;margin-top:5px;}",
+      ".texhub-widget-footer{border-top:1px solid rgba(148,163,184,.25);padding:8px;display:flex;flex-direction:column;gap:6px;background:#fff;}",
+      ".texhub-widget-composer{display:flex;align-items:center;gap:6px;border:1px solid rgba(148,163,184,.45);border-radius:14px;background:#fff;padding:5px 6px;}",
+      ".texhub-widget-input{flex:1;min-height:34px;max-height:96px;resize:none;border:none;padding:7px 2px;font-size:14px;line-height:1.3;color:#0f172a;outline:none;background:transparent;}",
       ".texhub-widget-input:focus{box-shadow:none;}",
-      ".texhub-widget-file{position:relative;overflow:hidden;border:none;border-radius:12px;width:38px;height:38px;display:inline-flex;align-items:center;justify-content:center;font-size:20px;color:#667085;background:#EEF2F7;cursor:pointer;flex:0 0 38px;}",
+      ".texhub-widget-file{position:relative;overflow:hidden;border:none;border-radius:10px;width:34px;height:34px;display:inline-flex;align-items:center;justify-content:center;font-size:18px;color:#667085;background:#EEF2F7;cursor:pointer;flex:0 0 34px;}",
       ".texhub-widget-file input{position:absolute;inset:0;opacity:0;cursor:pointer;}",
-      ".texhub-widget-send{border:none;border-radius:12px;color:#fff;font-size:20px;font-weight:700;width:38px;height:38px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;flex:0 0 38px;}",
+      ".texhub-widget-send{border:none;border-radius:999px;color:#fff;font-size:18px;font-weight:700;width:34px;height:34px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;flex:0 0 34px;}",
       ".texhub-widget-send:disabled{opacity:.65;cursor:not-allowed;}",
-      ".texhub-widget-file-name{font-size:12px;color:#64748b;padding:0 2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}",
-      ".texhub-widget-error{display:none;font-size:13px;line-height:1.35;color:#B42318;background:#FEE4E2;border:1px solid #FDA29B;padding:8px 10px;border-radius:12px;}",
-      "@media (max-width:640px){.texhub-widget-wrap{left:12px!important;right:12px!important;bottom:12px!important;align-items:stretch!important}.texhub-widget-panel{width:100%;height:min(82vh,620px)}.texhub-widget-header{padding:12px 14px}.texhub-widget-header-title{font-size:16px}.texhub-widget-header-status{font-size:12px}.texhub-widget-body{padding:10px}.texhub-widget-empty{font-size:15px;padding:6px}.texhub-widget-msg{font-size:14px;padding:10px 12px}.texhub-widget-input{font-size:15px;min-height:36px}.texhub-widget-send,.texhub-widget-file{width:36px;height:36px}}"
+      ".texhub-widget-file-name{font-size:11px;color:#64748b;padding:0 2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}",
+      ".texhub-widget-error{display:none;font-size:12px;line-height:1.35;color:#B42318;background:#FEE4E2;border:1px solid #FDA29B;padding:7px 9px;border-radius:10px;}",
+      "@media (max-width:640px){.texhub-widget-wrap{left:10px!important;right:10px!important;bottom:10px!important;align-items:stretch!important}.texhub-widget-panel{width:100%;height:min(74vh,520px)}.texhub-widget-header{padding:10px 12px}.texhub-widget-header-title{font-size:15px}.texhub-widget-header-status{font-size:11px}.texhub-widget-body{padding:8px}.texhub-widget-empty{font-size:13px;padding:6px}.texhub-widget-msg{font-size:13px;padding:9px 11px}.texhub-widget-input{font-size:14px;min-height:33px}.texhub-widget-send,.texhub-widget-file{width:32px;height:32px;flex-basis:32px}}"
     ].join("");
 
     var wrapper = document.createElement("div");
     wrapper.className = "texhub-widget-wrap right";
     wrapper.style.position = "fixed";
-    wrapper.style.bottom = "16px";
-    wrapper.style.right = "16px";
+    wrapper.style.bottom = "14px";
+    wrapper.style.right = "14px";
     wrapper.style.left = "auto";
     wrapper.style.zIndex = "2147483647";
     wrapper.style.display = "flex";
     wrapper.style.flexDirection = "column";
     wrapper.style.alignItems = "flex-end";
-    wrapper.style.gap = "12px";
+    wrapper.style.gap = "10px";
 
     var panel = document.createElement("div");
     panel.className = "texhub-widget-panel hidden";
     panel.style.display = "none";
-    panel.style.width = "min(390px,calc(100vw - 24px))";
-    panel.style.height = "min(620px,calc(100vh - 24px))";
+    panel.style.width = "min(360px,calc(100vw - 20px))";
+    panel.style.height = "min(560px,calc(100vh - 20px))";
     panel.style.border = "1px solid rgba(148,163,184,.35)";
-    panel.style.borderRadius = "20px";
+    panel.style.borderRadius = "18px";
     panel.style.overflow = "hidden";
-    panel.style.boxShadow = "0 24px 60px rgba(15,23,42,.24)";
+    panel.style.boxShadow = "0 18px 40px rgba(15,23,42,.2)";
     panel.style.background = "#fff";
     panel.style.flexDirection = "column";
 
@@ -300,9 +300,9 @@
     launcher.type = "button";
     launcher.className = "texhub-widget-launcher";
     launcher.textContent = state.config.settings.launcher_label;
-    launcher.style.height = "56px";
-    launcher.style.minWidth = "56px";
-    launcher.style.padding = "0 16px";
+    launcher.style.height = "52px";
+    launcher.style.minWidth = "52px";
+    launcher.style.padding = "0 14px";
     launcher.style.border = "none";
     launcher.style.borderRadius = "999px";
     launcher.style.color = "#ffffff";
@@ -313,7 +313,7 @@
     launcher.style.alignItems = "center";
     launcher.style.justifyContent = "center";
     launcher.style.gap = "8px";
-    launcher.style.boxShadow = "0 16px 32px rgba(15,23,42,.2)";
+    launcher.style.boxShadow = "0 12px 26px rgba(15,23,42,.2)";
 
     wrapper.appendChild(panel);
     wrapper.appendChild(launcher);
@@ -453,13 +453,13 @@
 
     ui.wrapper.classList.remove("left", "right");
     ui.wrapper.classList.add(position);
-    ui.wrapper.style.bottom = "16px";
+    ui.wrapper.style.bottom = "14px";
     if (position === "left") {
-      ui.wrapper.style.left = "16px";
+      ui.wrapper.style.left = "14px";
       ui.wrapper.style.right = "auto";
       ui.wrapper.style.alignItems = "flex-start";
     } else {
-      ui.wrapper.style.right = "16px";
+      ui.wrapper.style.right = "14px";
       ui.wrapper.style.left = "auto";
       ui.wrapper.style.alignItems = "flex-end";
     }
