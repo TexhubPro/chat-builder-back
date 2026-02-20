@@ -19,15 +19,19 @@ class DatabaseSeeder extends Seeder
             SubscriptionPlanSeeder::class,
         ]);
 
-        // User::factory(10)->create();
-
+        // User::create([
+        //     'name' => 'Test User',
+        //     'email' => 'texus.tj@gmail.com',
+        //     'password' => bcrypt('Shod63mm'),
+        //     'role' => 'admin',
+        //     'status' => true,
+        // ]);
         User::create([
-            'name' => 'Test User',
-            'email' => 'texus.tj@gmail.com',
-            'password' => bcrypt('Shod63mm'),
+            'name' => 'Malok Admin',
+            'email' => 'malik@liddo.ai',
+            'password' => bcrypt('Malik2026'),
             'role' => 'admin',
             'status' => true,
-
         ]);
     }
 }
