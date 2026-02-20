@@ -2,6 +2,7 @@
 
 use App\Mail\EmailVerificationCodeMail;
 use App\Mail\TemporaryPasswordMail;
+use App\Models\Company;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
@@ -221,6 +222,54 @@ test('moderation status endpoint supports refresh and logout for pending user', 
     $this->assertDatabaseMissing('personal_access_tokens', [
         'id' => $issuedToken->accessToken->id,
     ]);
+});
+
+test('pending moderation user can submit moderation application', function () {
+    config()->set('moderation.enabled', true);
+
+    $user = User::factory()->create([
+        'email' => 'moderation-application@example.com',
+        'status' => false,
+        'email_verified_at' => now(),
+    ]);
+
+    $issuedToken = $user->createToken('frontend');
+
+    $response = $this
+        ->withHeader('Authorization', "Bearer {$issuedToken->plainTextToken}")
+        ->postJson('/api/auth/moderation-application', [
+            'company_name' => 'Mahmudi Shod Company',
+            'industry' => 'Beauty',
+            'short_description' => 'Сеть салонов и сервисов красоты.',
+            'primary_goal' => 'Автоматизировать обработку заявок и чатов.',
+            'liddo_use_case' => 'lead_generation',
+            'contact_email' => 'info@mahmudi.tj',
+            'contact_phone' => '+992 900 000 111',
+        ]);
+
+    $response
+        ->assertOk()
+        ->assertJsonPath('message', 'Moderation application submitted successfully.')
+        ->assertJsonPath('company.name', 'Mahmudi Shod Company')
+        ->assertJsonPath('company.industry', 'Beauty')
+        ->assertJsonPath('application.liddo_use_case', 'lead_generation');
+
+    $company = Company::query()
+        ->where('user_id', $user->id)
+        ->latest('id')
+        ->first();
+
+    expect($company)->not->toBeNull();
+    expect($company?->name)->toBe('Mahmudi Shod Company');
+    expect($company?->contact_email)->toBe('info@mahmudi.tj');
+
+    $settings = is_array($company?->settings) ? $company->settings : [];
+    $moderationMeta = is_array($settings['moderation_application'] ?? null)
+        ? $settings['moderation_application']
+        : [];
+
+    expect($moderationMeta['liddo_use_case'] ?? null)->toBe('lead_generation');
+    expect($moderationMeta['submitted_at'] ?? null)->not->toBeNull();
 });
 
 test('verification code resend respects cooldown', function () {

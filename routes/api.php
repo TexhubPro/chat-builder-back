@@ -34,6 +34,7 @@ Route::prefix('auth')->group(function (): void {
     Route::get('/oauth/{provider}/callback', [AuthController::class, 'socialCallback']);
     Route::middleware([EnsureApiTokenIsValid::class])->group(function (): void {
         Route::get('/moderation-status', [AuthController::class, 'moderationStatus']);
+        Route::post('/moderation-application', [AuthController::class, 'submitModerationApplication']);
         Route::post('/logout', [AuthController::class, 'logout']);
     });
 

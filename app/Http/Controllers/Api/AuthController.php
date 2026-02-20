@@ -22,6 +22,7 @@ use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
+use Illuminate\Validation\Rule;
 use Illuminate\Validation\Rules\Password;
 use Laravel\Sanctum\NewAccessToken;
 use Laravel\Socialite\Contracts\User as SocialiteUserContract;
@@ -43,6 +44,14 @@ class AuthController extends Controller
     private const OAUTH_STATE_TTL_MINUTES = 10;
     private const EMAIL_VERIFICATION_CODE_LENGTH = 6;
     private const SUPPORTED_SOCIAL_PROVIDERS = ['github', 'google'];
+    private const MODERATION_APPLICATION_USE_CASES = [
+        'lead_generation',
+        'support_automation',
+        'sales_automation',
+        'appointments',
+        'orders',
+        'other',
+    ];
 
     public function register(Request $request): JsonResponse
     {
@@ -623,6 +632,85 @@ class AuthController extends Controller
         ]);
     }
 
+    public function submitModerationApplication(Request $request): JsonResponse
+    {
+        $user = $request->user();
+
+        if (!$user instanceof User) {
+            return response()->json([
+                'message' => 'Unauthorized.',
+            ], 401);
+        }
+
+        if (!$user->email_verified_at) {
+            $user->currentAccessToken()?->delete();
+
+            return response()->json([
+                'message' => 'Email is not verified.',
+            ], 403);
+        }
+
+        if (!$this->isModerationManagedUser($user)) {
+            return response()->json([
+                'message' => 'Moderation application is available only for accounts under moderation.',
+            ], 403);
+        }
+
+        $validated = $request->validate([
+            'company_name' => ['required', 'string', 'min:2', 'max:160'],
+            'industry' => ['nullable', 'string', 'max:120'],
+            'short_description' => ['nullable', 'string', 'max:1000'],
+            'primary_goal' => ['nullable', 'string', 'max:1000'],
+            'liddo_use_case' => ['required', 'string', Rule::in(self::MODERATION_APPLICATION_USE_CASES)],
+            'contact_email' => ['nullable', 'email', 'max:255'],
+            'contact_phone' => ['nullable', 'string', 'max:32', 'regex:/^[0-9+\\-\\s()]{5,32}$/'],
+        ]);
+
+        $company = $this->subscriptionService()->provisionDefaultWorkspaceForUser(
+            $user->id,
+            $user->name
+        );
+
+        $companySettings = is_array($company->settings) ? $company->settings : [];
+        $existingModerationMeta = is_array($companySettings['moderation_application'] ?? null)
+            ? $companySettings['moderation_application']
+            : [];
+
+        $company->forceFill([
+            'name' => trim((string) $validated['company_name']),
+            'industry' => $this->nullableTrimmedString($validated['industry'] ?? null),
+            'short_description' => $this->nullableTrimmedString($validated['short_description'] ?? null),
+            'primary_goal' => $this->nullableTrimmedString($validated['primary_goal'] ?? null),
+            'contact_email' => $this->nullableTrimmedString($validated['contact_email'] ?? null),
+            'contact_phone' => $this->nullableTrimmedString($validated['contact_phone'] ?? null),
+            'settings' => array_replace_recursive($companySettings, [
+                'moderation_application' => array_filter([
+                    ...$existingModerationMeta,
+                    'liddo_use_case' => (string) $validated['liddo_use_case'],
+                    'submitted_at' => now()->toIso8601String(),
+                    'submitted_by_user_id' => $user->id,
+                ], static fn ($value): bool => $value !== null && $value !== ''),
+            ]),
+        ])->save();
+
+        return response()->json([
+            'message' => 'Moderation application submitted successfully.',
+            'company' => [
+                'id' => $company->id,
+                'name' => $company->name,
+                'industry' => $company->industry,
+                'short_description' => $company->short_description,
+                'primary_goal' => $company->primary_goal,
+                'contact_email' => $company->contact_email,
+                'contact_phone' => $company->contact_phone,
+            ],
+            'application' => [
+                'liddo_use_case' => (string) $validated['liddo_use_case'],
+                'submitted_at' => now()->toIso8601String(),
+            ],
+        ]);
+    }
+
     public function logout(Request $request): JsonResponse
     {
         $request->user()->currentAccessToken()?->delete();
@@ -812,6 +900,17 @@ class AuthController extends Controller
         }
 
         return $normalized;
+    }
+
+    private function nullableTrimmedString(mixed $value): ?string
+    {
+        if (!is_string($value)) {
+            return null;
+        }
+
+        $normalized = trim($value);
+
+        return $normalized !== '' ? $normalized : null;
     }
 
     private function storeUserAvatar(UploadedFile $avatar): string
