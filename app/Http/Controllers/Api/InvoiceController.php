@@ -134,7 +134,7 @@ class InvoiceController extends Controller
             ]);
         }
 
-        $orderId = (string) ($payload['order_id'] ?? '');
+        $orderId = (string) ($payload['order_id'] ?? $payload['orderId'] ?? '');
         $invoice = $this->resolveInvoiceByAlifOrderId($orderId);
 
         if (!$invoice) {
@@ -151,7 +151,7 @@ class InvoiceController extends Controller
                 'callback_payload' => $payload,
                 'status_raw' => (string) ($payload['status'] ?? ''),
                 'status_normalized' => $normalizedStatus,
-                'transaction_id' => (string) ($payload['transaction_id'] ?? ''),
+                'transaction_id' => (string) ($payload['transaction_id'] ?? $payload['transactionId'] ?? ''),
             ],
         ];
 

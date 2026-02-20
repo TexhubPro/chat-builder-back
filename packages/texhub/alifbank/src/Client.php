@@ -50,9 +50,12 @@ class Client
         return [
             'key' => $key,
             'order_id' => $orderId,
+            'orderId' => $orderId,
             'amount' => $amountFormatted,
             'callback_url' => $callback,
+            'callbackUrl' => $callback,
             'return_url' => $return,
+            'returnUrl' => $return,
             'gate' => $gate,
             'token' => $token,
             'email' => $email,
@@ -90,9 +93,9 @@ class Client
             return false;
         }
 
-        $orderId = (string) ($payload['order_id'] ?? '');
+        $orderId = (string) ($payload['order_id'] ?? $payload['orderId'] ?? '');
         $status = (string) ($payload['status'] ?? '');
-        $transactionId = (string) ($payload['transaction_id'] ?? '');
+        $transactionId = (string) ($payload['transaction_id'] ?? $payload['transactionId'] ?? '');
         $token = (string) ($payload['token'] ?? '');
 
         if ($orderId === '' || $status === '' || $transactionId === '' || $token === '') {
